@@ -49,6 +49,18 @@ class Endpoint:
     def path_params(self) -> List[Parameter]:
         return [p for p in self.parameters if p.location == "path"]
 
+    @property
+    def module(self) -> str:
+        """
+        Primeiro segmento do path (ex.: "api1", "api5"). No vAPI, cada módulo
+        tem sua própria tabela de usuários/credenciais — completamente
+        independente das demais — então este valor é usado para resolver
+        qual par de identidades (A/B) usar ao gerar casos de teste para este
+        endpoint (ver Config.identity() em config.py).
+        """
+        segments = [s for s in self.path.split("/") if s]
+        return segments[0] if segments else ""
+
     def build_path(self, substitutions: Dict[str, str]) -> str:
         """Substitui os parâmetros de path (ex.: {api1_id}) pelos valores dados."""
         result = self.path

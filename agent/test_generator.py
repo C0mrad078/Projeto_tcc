@@ -23,7 +23,7 @@ path cada), mas não seria correto para um endpoint hipotético do tipo
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .config import Identity
 from .openapi_parser import Endpoint, Parameter
@@ -33,6 +33,18 @@ from .relation_inference import RelationCandidate
 # que o classifier confirme, via GET de verificação pós-ataque, se a escrita
 # do atacante realmente persistiu no recurso da vítima.
 CANARY_PREFIX = "bola-test"
+
+# INCIDENTE REAL (rodada contra o vAPI real, 2026-09-05): a primeira versão
+# deste probe preenchia TODOS os campos de body do schema com o canário —
+# incluindo "username" e "password" no PUT /api1/user/{api1_id}. Como o vAPI
+# autentica comparando username/senha em texto puro contra a tabela, isso
+# sobrescreveu as credenciais da PRÓPRIA VÍTIMA durante o ataque, quebrando a
+# verificação pós-ataque (que usa o token original da vítima) e invalidando o
+# .env no meio da execução. Por isso excluímos explicitamente campos com cara
+# de credencial do probe de escrita — o canário ainda fica visível via outros
+# campos do corpo (ex.: "name", "course"), então a capacidade de detecção não
+# é perdida.
+CREDENTIAL_LIKE_FIELD_NAMES = {"username", "password", "email", "token", "secret", "api_key", "apikey"}
 
 
 @dataclass
@@ -54,7 +66,8 @@ def canary_value(attacker_label: str) -> str:
 def _attacker_body_probe(endpoint: Endpoint, attacker: Identity) -> Optional[Dict[str, Any]]:
     """
     Para métodos de escrita (PUT/PATCH), monta um corpo mínimo de sondagem:
-    preenche os campos de body do schema com um valor "canário" fácil de
+    preenche os campos de body do schema (exceto os de cara de credencial —
+    ver CREDENTIAL_LIKE_FIELD_NAMES) com um valor "canário" fácil de
     reconhecer na resposta (contém o rótulo do atacante).
     """
     if endpoint.method not in {"PUT", "PATCH"}:
@@ -63,6 +76,8 @@ def _attacker_body_probe(endpoint: Endpoint, attacker: Identity) -> Optional[Dic
     canary = canary_value(attacker.label)
     for param in endpoint.parameters:
         if param.location != "body":
+            continue
+        if param.name.lower() in CREDENTIAL_LIKE_FIELD_NAMES:
             continue
         if param.schema_type in (None, "string"):
             body[param.name] = canary
@@ -91,9 +106,19 @@ def _build_target(
 
 def generate_test_cases(
     candidates: List[RelationCandidate],
-    user_a: Identity,
-    user_b: Identity,
+    identity_resolver: Callable[[str], Tuple[Identity, Identity]],
 ) -> List[TestCase]:
+    """
+    `identity_resolver(module) -> (user_a, user_b)` retorna o par de
+    identidades a usar para um dado módulo do vAPI (ex.: "api1", "api5").
+
+    DECISÃO DE DESIGN: recebemos um resolvedor em vez de um par fixo de
+    Identity porque cada módulo do vAPI tem sua própria tabela de usuários —
+    "Usuário A no api1" e "Usuário A no api5" são contas diferentes, com IDs
+    e credenciais independentes (ver config.py). O resolvedor permite ao
+    orchestrator decidir/cachear como resolver isso sem test_generator.py
+    precisar saber de onde vêm as credenciais.
+    """
     cases: List[TestCase] = []
     seen: set = set()
 
@@ -103,6 +128,8 @@ def generate_test_cases(
         if key in seen:
             continue
         seen.add(key)
+
+        user_a, user_b = identity_resolver(endpoint.module)
 
         for attacker, victim in ((user_b, user_a), (user_a, user_b)):
             if victim.resource_id is None:

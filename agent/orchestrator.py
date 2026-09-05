@@ -14,7 +14,7 @@ import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from .classifier import classify
 from .config import Config, Identity
@@ -53,24 +53,48 @@ def run_pipeline(
 
     candidates = infer_relations(spec, use_llm=use_llm_relation_inference)
 
+    # Módulos do vAPI (ex.: "api1", "api5") de fato envolvidos nos candidatos
+    # desta execução — cada um tem sua própria tabela de usuários (ver
+    # config.py), então só exigimos/carregamos credenciais para estes.
+    modules = sorted({c.endpoint.module for c in candidates})
+
     if not dry_run:
-        Config.require_network_config()
-    user_a, user_b = Config.user_a(), Config.user_b()
+        Config.require_network_config(modules)
 
-    if dry_run:
-        # Em --dry-run não exigimos USER_A_ID/USER_B_ID reais (não há
-        # nenhuma chamada HTTP), mas generate_test_cases() pula vítimas sem
-        # resource_id. Para preservar a validação offline da contagem de
-        # casos gerados, usamos IDs de exemplo aqui — nunca em uma execução
-        # real, onde require_network_config() já teria barrado antes.
-        if user_a.resource_id is None:
-            user_a = Identity(label="A", email=user_a.email, password=user_a.password, resource_id="1", token=user_a.token)
-            print("[orchestrator] Aviso: USER_A_ID ausente; usando ID de exemplo '1' apenas para --dry-run.")
-        if user_b.resource_id is None:
-            user_b = Identity(label="B", email=user_b.email, password=user_b.password, resource_id="2", token=user_b.token)
-            print("[orchestrator] Aviso: USER_B_ID ausente; usando ID de exemplo '2' apenas para --dry-run.")
+    _identity_cache: Dict[str, Tuple[Identity, Identity]] = {}
 
-    test_cases = generate_test_cases(candidates, user_a, user_b)
+    def identity_resolver(module: str) -> Tuple[Identity, Identity]:
+        if module not in _identity_cache:
+            user_a = Config.identity(module, "A")
+            user_b = Config.identity(module, "B")
+            if dry_run:
+                # Em --dry-run não exigimos IDs reais (não há chamada HTTP),
+                # mas generate_test_cases() pula vítimas sem resource_id. Para
+                # preservar a validação offline da contagem de casos gerados,
+                # usamos IDs de exemplo aqui — nunca em uma execução real,
+                # onde require_network_config() já teria barrado antes.
+                if user_a.resource_id is None:
+                    user_a = Identity(
+                        label="A", username=user_a.username, password=user_a.password,
+                        resource_id="1", token=user_a.token,
+                    )
+                    print(
+                        f"[orchestrator] Aviso: USER_A_{module.upper()}_ID ausente; "
+                        "usando ID de exemplo '1' apenas para --dry-run."
+                    )
+                if user_b.resource_id is None:
+                    user_b = Identity(
+                        label="B", username=user_b.username, password=user_b.password,
+                        resource_id="2", token=user_b.token,
+                    )
+                    print(
+                        f"[orchestrator] Aviso: USER_B_{module.upper()}_ID ausente; "
+                        "usando ID de exemplo '2' apenas para --dry-run."
+                    )
+            _identity_cache[module] = (user_a, user_b)
+        return _identity_cache[module]
+
+    test_cases = generate_test_cases(candidates, identity_resolver)
 
     report: Dict[str, Any] = {
         "run_id": str(uuid.uuid4()),

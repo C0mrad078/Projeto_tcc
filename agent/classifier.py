@@ -209,6 +209,7 @@ def _llm_tie_break(result: ExecutionResult, model: str) -> Optional[Verdict]:
             # underscore) é o nome de campo correto no SDK google-genai
             # instalado, verificado por introspecção do pacote.
             response_format={"type": "text", "mime_type": "application/json", "schema_": schema},
+            timeout=Config.LLM_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001
         # Captura ampla e deliberada (ver relation_inference.py para a mesma

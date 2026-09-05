@@ -1,12 +1,12 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "vAPI - API1 (BOLA) e API5 (BFLA) - reconstrução manual",
-    "version": "0.1.0",
-    "description": "Especificação reconstruída manualmente a partir da coleção Postman pública do vAPI (github.com/roottusk/vapi), já que o projeto não publica um OpenAPI oficial. Cada operação tem uma extensão 'x-confidence': 'confirmed' significa que o endpoint foi validado (path e comportamento esperado); 'unverified_guess' significa reconstrução best-effort ainda não validada contra uma instância real (ver roteiro do TCC, etapas 3-4, antes de tratar como fonte de verdade)."
+    "title": "vAPI - API1 (BOLA) e API5 - reconstrução manual revisada",
+    "version": "0.2.0",
+    "description": "Especificação inicialmente reconstruída à mão a partir da coleção Postman do vAPI (github.com/roottusk/vapi). NOTA METODOLÓGICA: descobrimos depois que o próprio vAPI serve, embutida no HTML de documentação em '/vapi' (renderizado via redoc-cli), uma conversão automática da coleção Postman para OpenAPI 3.0 — mas essa conversão não modela a autenticação como um securityScheme (representa 'Authorization-Token' como um parâmetro de header literal, sem indicar quais endpoints exigem qual credencial), então ainda exigiu correção manual. Os campos de registro (POST /api1/user, POST /api5/user) e a ausência de qualquer endpoint de login foram confirmados cruzando essa doc gerada com o código-fonte dos controllers Laravel e o dump SQL das tabelas a_p_i1_users/a_p_i5_users. Cada operação tem uma extensão 'x-confidence': 'confirmed' (validado por múltiplas fontes) ou 'unverified_guess' (ainda não checado)."
   },
   "servers": [
-    { "url": "http://localhost/vapi", "description": "Instância local do vAPI via Docker." }
+    { "url": "http://localhost:8000/vapi", "description": "Instância local do vAPI via docker-compose (porta 8000 no host, mapeada para a porta 80 do container onde o Laravel escuta)." }
   ],
   "components": {
     "securitySchemes": {
@@ -14,17 +14,17 @@
         "type": "apiKey",
         "in": "header",
         "name": "Authorization-Token",
-        "description": "Cabeçalho customizado do vAPI (módulos API1/API5): base64(email:senha) — não é um Bearer token padrão."
+        "description": "Cabeçalho customizado do vAPI (módulos API1/API5): base64(username:senha) calculado pelo cliente — não há endpoint de login que emita esse token; o backend decodifica o header e compara username/senha diretamente contra a tabela do módulo (ver App\\CustomClasses\\CustomHeaderAuth)."
       }
     }
   },
   "security": [{ "AuthToken": [] }],
   "paths": {
-    "/api1/auth/register": {
+    "/api1/user": {
       "post": {
         "operationId": "api1_register",
-        "summary": "Registro de usuário (API1).",
-        "x-confidence": "unverified_guess",
+        "summary": "Registro de usuário (API1) — App\\Http\\Controllers\\API1UsersController@store.",
+        "x-confidence": "confirmed",
         "security": [],
         "requestBody": {
           "required": true,
@@ -33,43 +33,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "username": { "type": "string", "description": "Único na tabela a_p_i1_users (UNIQUE KEY)." },
                   "name": { "type": "string" },
-                  "email": { "type": "string" },
+                  "course": { "type": "string", "description": "Campo NOT NULL na tabela — obrigatório mesmo não sendo usado para autenticação." },
                   "password": { "type": "string" }
                 },
-                "required": ["name", "email", "password"]
+                "required": ["username", "name", "course", "password"]
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "Usuário criado." }
-        }
-      }
-    },
-    "/api1/auth/login": {
-      "post": {
-        "operationId": "api1_login",
-        "summary": "Login (API1).",
-        "x-confidence": "unverified_guess",
-        "security": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "email": { "type": "string" },
-                  "password": { "type": "string" }
-                },
-                "required": ["email", "password"]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": { "description": "Login bem-sucedido." }
+          "200": { "description": "Usuário criado (retorna o registro criado, incluindo o 'id' autoincremento)." }
         }
       }
     },
@@ -80,21 +55,24 @@
           "in": "path",
           "required": true,
           "schema": { "type": "string" },
-          "description": "Identificador do usuário/perfil no módulo API1."
+          "description": "Identificador (inteiro autoincremento) do usuário na tabela a_p_i1_users."
         }
       ],
       "get": {
         "operationId": "api1_get_user",
-        "summary": "Obtém o perfil de um usuário por ID — vulnerável a BOLA no vAPI.",
+        "summary": "Obtém o perfil de um usuário por ID.",
         "x-confidence": "confirmed",
+        "description": "VULNERÁVEL A BOLA confirmado por leitura do código-fonte: API1UsersController@show valida username/senha do cabeçalho contra a tabela, mas NUNCA compara o 'id' autenticado com o {api1_id} pedido — qualquer usuário válido do módulo pode ler o perfil de qualquer outro (inclusive o campo 'course', usado como campo de flag no ambiente de desafio).",
         "responses": {
-          "200": { "description": "Dados do usuário." }
+          "200": { "description": "Dados do usuário." },
+          "403": { "description": "Cabeçalho ausente ou credenciais inválidas (ver CustomHeaderAuth)." }
         }
       },
       "put": {
         "operationId": "api1_update_user",
-        "summary": "Atualiza o perfil de um usuário por ID — vulnerável a BOLA no vAPI.",
+        "summary": "Atualiza o perfil de um usuário por ID.",
         "x-confidence": "confirmed",
+        "description": "VULNERÁVEL A BOLA pelo mesmo motivo do GET: API1UsersController@update não verifica se o {api1_id} pedido pertence ao usuário autenticado.",
         "requestBody": {
           "required": true,
           "content": {
@@ -102,33 +80,68 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "name": { "type": "string" }
+                  "username": { "type": "string" },
+                  "name": { "type": "string" },
+                  "course": { "type": "string" },
+                  "password": { "type": "string" }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "Usuário atualizado." }
+          "200": { "description": "Usuário atualizado." },
+          "401": { "description": "Credenciais inválidas (nota: este endpoint retorna 401, enquanto o GET do mesmo módulo retorna 403 para o mesmo tipo de erro — inconsistência observada no próprio vAPI, não deste agente)." }
+        }
+      }
+    },
+    "/api5/user": {
+      "post": {
+        "operationId": "api5_register",
+        "summary": "Registro de usuário (API5) — App\\Http\\Controllers\\API5UsersController@store.",
+        "x-confidence": "confirmed",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" },
+                  "name": { "type": "string" },
+                  "address": { "type": "string" },
+                  "mobileno": { "type": "string" }
+                },
+                "required": ["username", "password", "name", "address", "mobileno"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Usuário criado." }
         }
       }
     },
     "/api5/user/{api5_id}": {
       "get": {
         "operationId": "api5_get_user",
-        "summary": "Obtém dados administrativos de um usuário por ID — vulnerável a BOLA/BFLA no vAPI.",
+        "summary": "Obtém dados de um usuário por ID.",
         "x-confidence": "confirmed",
+        "description": "ACHADO IMPORTANTE (leitura do código-fonte): diferente do API1, API5UsersController@show inclui '->where(\"id\", $id)' na verificação — ou seja, o backend só retorna dados quando o {api5_id} pedido é o do PRÓPRIO usuário autenticado. Este endpoint, isoladamente, NÃO é vulnerável a BOLA; mantemos como candidato de teste justamente para servir de verdadeiro-negativo (o agente deve classificá-lo como 'not_found'/protegido, não 'confirmed'). A falha real do módulo API5 está em GET /api5/users (showall, fora do escopo de candidatos deste agente por não ter parâmetro de ID): qualquer usuário autenticado válido pode listar TODOS os usuários — isso é Broken Function Level Authorization (API5:2019), não BOLA por objeto, e está fora do escopo deste TCC salvo decisão explícita de expandir.",
         "parameters": [
           {
             "name": "api5_id",
             "in": "path",
             "required": true,
             "schema": { "type": "string" },
-            "description": "Identificador do usuário/perfil no módulo API5."
+            "description": "Identificador (inteiro autoincremento) do usuário na tabela a_p_i5_users."
           }
         ],
         "responses": {
-          "200": { "description": "Dados do usuário." }
+          "200": { "description": "Dados do usuário (só quando api5_id == id do autenticado)." },
+          "403": { "description": "Cabeçalho ausente, credenciais inválidas, OU api5_id não é o do usuário autenticado (mesmo código de erro para os dois casos)." }
         }
       }
     }

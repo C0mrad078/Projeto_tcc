@@ -153,6 +153,7 @@ def _llm_refine(candidates: List[RelationCandidate], model: str) -> List[Relatio
         # a documentação pública, no momento em que este código foi escrito,
         # mostrava "schema" sem underscore, o que causaria erro).
         response_format={"type": "text", "mime_type": "application/json", "schema_": schema},
+        timeout=Config.LLM_TIMEOUT_S,
     )
     decisions = {d["index"]: d for d in json.loads(interaction.output_text)["decisions"]}
 

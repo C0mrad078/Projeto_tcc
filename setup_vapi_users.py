@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Script auxiliar: registra dois usuários de teste (A e B) no vAPI real,
-calcula os tokens base64(email:senha) e imprime um bloco pronto para colar
-no .env.
+Script auxiliar: registra os usuários de teste (A e B) nos módulos API1 e
+API5 do vAPI real, calcula os tokens base64(username:senha) e imprime um
+bloco pronto para colar no .env.
 
-AVISO METODOLÓGICO IMPORTANTE: os campos exatos do corpo de registro/login
-(nomes como "name", "email", "password") e os caminhos REGISTER_PATH/
-LOGIN_PATH abaixo são uma reconstrução best-effort a partir da coleção
-Postman pública do vAPI (github.com/roottusk/vapi) — NÃO foram confirmados
-contra uma instância rodando. Essa validação só acontece na etapa 3 do
-roteiro deste TCC, quando o vAPI estiver de pé via Docker.
-
-Se o registro ou o login falharem, o script imprime a resposta bruta do
-servidor e para — de propósito. A intenção é que você ajuste
-REGISTER_PATH/LOGIN_PATH/payload/_extract_id() manualmente com base na
-resposta real, documentando a divergência encontrada entre a spec manual e o
-comportamento real da API (é exatamente o tipo de achado que vale registrar
-no capítulo de metodologia), em vez de o script tentar "adivinhar" um novo
-formato silenciosamente.
+DECISÕES DE DESIGN CONFIRMADAS POR LEITURA DO CÓDIGO-FONTE DO VAPI (Laravel):
+- API1 e API5 têm tabelas de usuários totalmente separadas
+  (a_p_i1_users / a_p_i5_users), com IDs e credenciais independentes — por
+  isso registramos 4 contas (A e B, em cada um dos dois módulos), não 2.
+- Não existe endpoint de login em nenhum dos dois módulos. O "token" é só
+  base64(username:senha) calculado pelo cliente; o backend decodifica o
+  cabeçalho Authorization-Token e compara username/senha diretamente com a
+  tabela (ver app/CustomClasses/CustomHeaderAuth.php). Por isso este script
+  só registra e nunca tenta autenticar.
+- Campos de registro exatos, confirmados contra App\\Http\\Controllers\\
+  API1UsersController::store / API5UsersController::store e o dump SQL
+  (colunas NOT NULL sem default):
+    POST /api1/user -> {username, name, course, password}   (username é UNIQUE)
+    POST /api5/user -> {username, password, name, address, mobileno}
 """
 from __future__ import annotations
 
@@ -31,30 +31,41 @@ import requests
 
 from agent.config import Config
 
-# Best-effort, não confirmado — ver aviso no topo do arquivo.
-REGISTER_PATH = "/api1/auth/register"
-LOGIN_PATH = "/api1/auth/login"
+REGISTER_PATH = {
+    "api1": "/api1/user",
+    "api5": "/api5/user",
+}
 
 
 def _random_password() -> str:
     return secrets.token_urlsafe(12)
 
 
-def register_user(base_url: str, label: str, email: str, password: str) -> dict:
-    url = f"{base_url}{REGISTER_PATH}"
-    payload = {
-        "name": f"BOLA Test User {label}",
-        "email": email,
-        "password": password,
-    }
+def _register_payload(module: str, username: str, password: str) -> dict:
+    if module == "api1":
+        return {"username": username, "name": f"BOLA Test {username}", "course": "TCC BOLA Test", "password": password}
+    if module == "api5":
+        return {
+            "username": username,
+            "password": password,
+            "name": f"BOLA Test {username}",
+            "address": "N/A",
+            "mobileno": "0000000000",
+        }
+    raise ValueError(f"Módulo desconhecido: {module}")
+
+
+def register_user(base_url: str, module: str, username: str, password: str) -> dict:
+    url = f"{base_url}{REGISTER_PATH[module]}"
+    payload = _register_payload(module, username, password)
     response = requests.post(url, json=payload, timeout=Config.REQUEST_TIMEOUT_S)
     if response.status_code >= 400:
         print(
-            f"[setup] Falha ao registrar usuário {label} (HTTP {response.status_code}) em {url}.\n"
+            f"[setup] Falha ao registrar em {module} (HTTP {response.status_code}) em {url}.\n"
             f"Corpo enviado: {json.dumps(payload)}\n"
             f"Corpo da resposta: {response.text}\n"
-            "Ajuste REGISTER_PATH e o payload em setup_vapi_users.py conforme "
-            "o formato real do vAPI antes de rodar de novo.",
+            "Ajuste REGISTER_PATH/_register_payload() em setup_vapi_users.py "
+            "conforme o formato real do vAPI antes de rodar de novo.",
             file=sys.stderr,
         )
         response.raise_for_status()
@@ -63,10 +74,10 @@ def register_user(base_url: str, label: str, email: str, password: str) -> dict:
 
 def _extract_id(payload: dict) -> str:
     """
-    Tenta localizar o ID do usuário em formatos comuns de resposta
-    (`id`, `_id`, aninhado em `user`/`data`...). Levanta erro explícito se
-    não encontrar, em vez de assumir um caminho e falhar silenciosamente
-    mais adiante no pipeline.
+    Localiza o ID do usuário na resposta. Os controllers API1/API5 retornam
+    diretamente o modelo Eloquent criado (API1Users::create(...) /
+    API5Users::create(...)), então o campo esperado é "id" no nível raiz —
+    mas mantemos os fallbacks abaixo caso essa suposição mude em outra versão.
     """
     candidates = [payload.get("id"), payload.get("_id")]
     for key in ("user", "data"):
@@ -83,28 +94,30 @@ def _extract_id(payload: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default=Config.TARGET_BASE_URL, help="URL base do vAPI (ex.: http://localhost/vapi)")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--base-url", default=Config.TARGET_BASE_URL, help="URL base do vAPI (ex.: http://localhost:8000/vapi)")
     args = parser.parse_args()
 
     env_lines = [f"TARGET_BASE_URL={args.base_url}"]
 
-    for label in ("A", "B"):
-        email = f"bola.test.{label.lower()}.{secrets.token_hex(4)}@example.test"
-        password = _random_password()
+    for module in ("api1", "api5"):
+        for label in ("A", "B"):
+            username = f"bola{label.lower()}{secrets.token_hex(3)}"
+            password = _random_password()
 
-        register_response = register_user(args.base_url, label, email, password)
-        user_id = _extract_id(register_response)
+            register_response = register_user(args.base_url, module, username, password)
+            user_id = _extract_id(register_response)
 
-        token = base64.b64encode(f"{email}:{password}".encode()).decode("ascii")
+            token = base64.b64encode(f"{username}:{password}".encode()).decode("ascii")
 
-        env_lines += [
-            f"USER_{label}_EMAIL={email}",
-            f"USER_{label}_PASSWORD={password}",
-            f"USER_{label}_ID={user_id}",
-            f"USER_{label}_TOKEN={token}",
-        ]
-        print(f"[setup] Usuário {label} registrado: id={user_id}, email={email}")
+            prefix = f"USER_{label}_{module.upper()}"
+            env_lines += [
+                f"{prefix}_USERNAME={username}",
+                f"{prefix}_PASSWORD={password}",
+                f"{prefix}_ID={user_id}",
+                f"{prefix}_TOKEN={token}",
+            ]
+            print(f"[setup] {module}/{label} registrado: id={user_id}, username={username}")
 
     print("\n# Cole o bloco abaixo no seu .env:\n")
     print("\n".join(env_lines))

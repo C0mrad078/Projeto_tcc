@@ -9,10 +9,19 @@ qualquer outro alvo.
 Os atributos de classe abaixo (URLs, nomes de cabeçalho, flags) têm defaults
 seguros e podem ser lidos mesmo sem um .env completo — isso é o que permite
 rodar o parser/inferência/geração de casos offline (--dry-run) sem qualquer
-configuração de rede. Já os métodos `user_a()` / `user_b()` /
-`require_network_config()` são explicitamente carregados sob demanda pelas
-etapas que realmente precisam de credenciais (executor.py,
-setup_vapi_users.py), para que a ausência delas só quebre quem depende delas.
+configuração de rede. Já os métodos `identity()` / `require_network_config()`
+são explicitamente carregados sob demanda pelas etapas que realmente
+precisam de credenciais (executor.py via orchestrator.py, setup_vapi_users.py),
+para que a ausência delas só quebre quem depende delas.
+
+DECISÃO DE DESIGN IMPORTANTE (achado ao inspecionar o código-fonte real do
+vAPI): cada módulo do vAPI (api1, api5, ...) tem sua PRÓPRIA tabela de
+usuários no MySQL (`a_p_i1_users`, `a_p_i5_users`, ...), com contadores de ID
+independentes e nenhuma relação entre si. Não existe um "Usuário A" único
+compartilhado entre módulos — é preciso registrar (e guardar credenciais/ID)
+separadamente por módulo. Por isso as identidades aqui são resolvidas por
+`(módulo, rótulo)` em vez de um par fixo `user_a()`/`user_b()` global, que foi
+a modelagem inicial (incorreta) deste agente antes dessa descoberta.
 """
 from __future__ import annotations
 
@@ -20,7 +29,7 @@ import base64
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
@@ -52,10 +61,14 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Identity:
-    """Um usuário de teste (A ou B) usado nos ataques cruzados de BOLA."""
+    """
+    Um usuário de teste (A ou B) em UM módulo específico do vAPI (ex.: "A no
+    módulo api1" e "A no módulo api5" são duas contas completamente
+    independentes, com IDs e credenciais próprias).
+    """
 
     label: str
-    email: Optional[str]
+    username: Optional[str]
     password: Optional[str]
     resource_id: Optional[str]
     token: Optional[str] = None
@@ -64,35 +77,43 @@ class Identity:
         """
         Retorna o token pronto para o cabeçalho de autenticação.
 
-        Se USER_[A|B]_TOKEN já estiver definido no .env, usamos ele
-        diretamente — é o que setup_vapi_users.py grava depois de registrar
-        os usuários reais. Caso contrário, calculamos base64(email:senha)
-        on-the-fly, o que é útil para configurar um cenário de teste manual
-        sem depender do script de setup.
+        Se USER_{label}_{módulo}_TOKEN já estiver definido no .env, usamos
+        ele diretamente — é o que setup_vapi_users.py grava depois de
+        registrar os usuários reais. Caso contrário, calculamos
+        base64(username:senha) on-the-fly, útil para configurar um cenário de
+        teste manual sem depender do script de setup.
         """
         if self.token:
             return self.token
-        if self.email is None or self.password is None:
+        if self.username is None or self.password is None:
             raise ValueError(
-                f"Identidade '{self.label}' não tem token nem email/senha configurados."
+                f"Identidade '{self.label}' não tem token nem username/senha configurados."
             )
-        raw = f"{self.email}:{self.password}".encode("utf-8")
+        raw = f"{self.username}:{self.password}".encode("utf-8")
         return base64.b64encode(raw).decode("ascii")
 
 
 class Config:
     # --- Alvo ---
-    TARGET_BASE_URL: str = _env("TARGET_BASE_URL", "http://localhost/vapi")
+    # DECISÃO DE DESIGN: o docker-compose.yml oficial do vAPI mapeia a porta
+    # 8000 do host para a porta 80 do container (onde o `php artisan serve`
+    # efetivamente escuta, via a env var SERVER_PORT=80 do próprio compose).
+    # Ou seja, o vAPI rodando via Docker fica em localhost:8000, não em
+    # localhost:80 — confirmado empiricamente subindo o container.
+    TARGET_BASE_URL: str = _env("TARGET_BASE_URL", "http://localhost:8000/vapi")
     REQUEST_TIMEOUT_S: float = _env_float("REQUEST_TIMEOUT_S", 10.0)
     REQUEST_DELAY_MS: float = _env_float("REQUEST_DELAY_MS", 150.0)
 
-    # --- Autenticação do módulo API1/API5 do vAPI ---
+    # --- Autenticação dos módulos do vAPI ---
     # DECISÃO DE DESIGN: o vAPI não usa "Authorization: Bearer <token>" como a
     # maioria das specs OpenAPI de exemplo assume — ele usa um cabeçalho
-    # customizado contendo base64(usuario:senha). Isso é parametrizado aqui
-    # (em vez de fixo em http_client.py/executor.py) para que, se este agente
-    # for reaproveitado contra outro alvo do mesmo TCC com esquema de auth
-    # diferente, baste trocar estas duas variáveis.
+    # customizado contendo base64(usuario:senha), validado no backend
+    # decodificando o header e comparando contra a tabela do módulo (ver
+    # app/CustomClasses/CustomHeaderAuth.php e os controllers API1/API5 no
+    # código-fonte do vAPI). Isso é parametrizado aqui (em vez de fixo em
+    # http_client.py/executor.py) para que, se este agente for reaproveitado
+    # contra outro alvo do mesmo TCC com esquema de auth diferente, baste
+    # trocar estas duas variáveis.
     AUTH_HEADER_NAME: str = _env("AUTH_HEADER_NAME", "Authorization-Token")
     AUTH_HEADER_FORMAT: str = _env("AUTH_HEADER_FORMAT", "{token}")
 
@@ -111,6 +132,13 @@ class Config:
     LLM_MODEL: str = _env("LLM_MODEL", "gemini-3.8-flash")
     USE_LLM_FOR_RELATION_INFERENCE: bool = _env_bool("USE_LLM_FOR_RELATION_INFERENCE", True)
     USE_LLM_FOR_CLASSIFICATION: bool = _env_bool("USE_LLM_FOR_CLASSIFICATION", True)
+    # INCIDENTE REAL: numa rodada contra o vAPI real, uma chamada ao Gemini
+    # ficou pendurada indefinidamente (sem essa configuração, o SDK usa seu
+    # próprio timeout padrão, que não é garantidamente curto), travando o
+    # pipeline inteiro sem nenhum log. Definimos um teto explícito para que
+    # uma falha de rede vire uma exceção tratável (ver o `except Exception`
+    # em relation_inference.py/classifier.py) em vez de um travamento silencioso.
+    LLM_TIMEOUT_S: float = _env_float("LLM_TIMEOUT_S", 30.0)
 
     # --- Saída ---
     RUNS_DIR: Path = Path(_env("RUNS_DIR", str(PROJECT_ROOT / "runs")))
@@ -122,43 +150,47 @@ class Config:
         return {Config.AUTH_HEADER_NAME: header_value}
 
     @staticmethod
-    def user_a() -> Identity:
+    def identity(module: str, label: str) -> Identity:
+        """
+        Carrega a identidade `label` ("A" ou "B") para o módulo `module`
+        (ex.: "api1", "api5") a partir de variáveis como
+        USER_A_API1_USERNAME / USER_A_API1_PASSWORD / USER_A_API1_ID /
+        USER_A_API1_TOKEN. Ver docstring do módulo para o porquê de a
+        identidade ser escopada por módulo em vez de global.
+        """
+        prefix = f"USER_{label}_{module.upper()}"
         return Identity(
-            label="A",
-            email=_env("USER_A_EMAIL"),
-            password=_env("USER_A_PASSWORD"),
-            resource_id=_env("USER_A_ID"),
-            token=_env("USER_A_TOKEN"),
+            label=label,
+            username=_env(f"{prefix}_USERNAME"),
+            password=_env(f"{prefix}_PASSWORD"),
+            resource_id=_env(f"{prefix}_ID"),
+            token=_env(f"{prefix}_TOKEN"),
         )
 
     @staticmethod
-    def user_b() -> Identity:
-        return Identity(
-            label="B",
-            email=_env("USER_B_EMAIL"),
-            password=_env("USER_B_PASSWORD"),
-            resource_id=_env("USER_B_ID"),
-            token=_env("USER_B_TOKEN"),
-        )
+    def require_network_config(modules: List[str]) -> None:
+        """
+        Valida a configuração mínima para etapas que fazem chamadas HTTP
+        reais (executor.py via orchestrator.py, setup_vapi_users.py).
+        Chamado explicitamente por essas etapas — nunca no import do módulo
+        — para que o uso só-offline (parser/inferência/geração de casos) não
+        exija um .env completo.
 
-    @staticmethod
-    def require_network_config() -> None:
+        `modules` é a lista de módulos (ex.: ["api1", "api5"]) realmente
+        envolvidos nos casos de teste gerados nesta execução — só exigimos
+        credenciais para os módulos que serão de fato usados.
         """
-        Valida a configuração mínima para etapas que fazem chamadas HTTP reais
-        (executor.py via orchestrator.py, setup_vapi_users.py). Chamado
-        explicitamente por essas etapas — nunca no import do módulo — para
-        que o uso só-offline (parser/inferência/geração de casos) não exija
-        um .env completo.
-        """
-        missing = []
-        for name in ("USER_A_ID", "USER_B_ID"):
-            if not _env(name):
-                missing.append(name)
-        for ident in (Config.user_a(), Config.user_b()):
-            try:
-                ident.auth_token()
-            except ValueError:
-                missing.append(f"USER_{ident.label}_TOKEN ou USER_{ident.label}_EMAIL/PASSWORD")
+        missing: List[str] = []
+        for module in modules:
+            for label in ("A", "B"):
+                ident = Config.identity(module, label)
+                prefix = f"USER_{label}_{module.upper()}"
+                if not ident.resource_id:
+                    missing.append(f"{prefix}_ID")
+                try:
+                    ident.auth_token()
+                except ValueError:
+                    missing.append(f"{prefix}_TOKEN ou {prefix}_USERNAME/PASSWORD")
         if missing:
             raise RuntimeError(
                 "Configuração incompleta para execução contra o vAPI real. "
