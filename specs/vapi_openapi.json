@@ -1,0 +1,136 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "vAPI - API1 (BOLA) e API5 (BFLA) - reconstrução manual",
+    "version": "0.1.0",
+    "description": "Especificação reconstruída manualmente a partir da coleção Postman pública do vAPI (github.com/roottusk/vapi), já que o projeto não publica um OpenAPI oficial. Cada operação tem uma extensão 'x-confidence': 'confirmed' significa que o endpoint foi validado (path e comportamento esperado); 'unverified_guess' significa reconstrução best-effort ainda não validada contra uma instância real (ver roteiro do TCC, etapas 3-4, antes de tratar como fonte de verdade)."
+  },
+  "servers": [
+    { "url": "http://localhost/vapi", "description": "Instância local do vAPI via Docker." }
+  ],
+  "components": {
+    "securitySchemes": {
+      "AuthToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization-Token",
+        "description": "Cabeçalho customizado do vAPI (módulos API1/API5): base64(email:senha) — não é um Bearer token padrão."
+      }
+    }
+  },
+  "security": [{ "AuthToken": [] }],
+  "paths": {
+    "/api1/auth/register": {
+      "post": {
+        "operationId": "api1_register",
+        "summary": "Registro de usuário (API1).",
+        "x-confidence": "unverified_guess",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "email": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["name", "email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Usuário criado." }
+        }
+      }
+    },
+    "/api1/auth/login": {
+      "post": {
+        "operationId": "api1_login",
+        "summary": "Login (API1).",
+        "x-confidence": "unverified_guess",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "email": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["email", "password"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Login bem-sucedido." }
+        }
+      }
+    },
+    "/api1/user/{api1_id}": {
+      "parameters": [
+        {
+          "name": "api1_id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "string" },
+          "description": "Identificador do usuário/perfil no módulo API1."
+        }
+      ],
+      "get": {
+        "operationId": "api1_get_user",
+        "summary": "Obtém o perfil de um usuário por ID — vulnerável a BOLA no vAPI.",
+        "x-confidence": "confirmed",
+        "responses": {
+          "200": { "description": "Dados do usuário." }
+        }
+      },
+      "put": {
+        "operationId": "api1_update_user",
+        "summary": "Atualiza o perfil de um usuário por ID — vulnerável a BOLA no vAPI.",
+        "x-confidence": "confirmed",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Usuário atualizado." }
+        }
+      }
+    },
+    "/api5/user/{api5_id}": {
+      "get": {
+        "operationId": "api5_get_user",
+        "summary": "Obtém dados administrativos de um usuário por ID — vulnerável a BOLA/BFLA no vAPI.",
+        "x-confidence": "confirmed",
+        "parameters": [
+          {
+            "name": "api5_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Identificador do usuário/perfil no módulo API5."
+          }
+        ],
+        "responses": {
+          "200": { "description": "Dados do usuário." }
+        }
+      }
+    }
+  }
+}
