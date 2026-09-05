@@ -1,0 +1,24 @@
+{
+  "metadata": {
+    "description": "Gabarito manual de falhas de BOLA nos módulos API1 e API5 do vAPI (github.com/roottusk/vapi), usado por compute_metrics.py para calcular precisão/revocação/F1 do agente.",
+    "validated_by": "Leitura direta do código-fonte dos controllers Laravel (App\\Http\\Controllers\\API1UsersController e API5UsersController) e confirmação empírica contra uma instância Docker real do vAPI.",
+    "validated_at": "2026-09-05",
+    "not_included_by_design": [
+      "GET /api5/users (listagem completa, sem parâmetro de ID) permite que qualquer usuário autenticado do módulo liste todos os registros — é uma falha de Broken Function Level Authorization (OWASP API5:2019), não de BOLA por objeto, e está fora do escopo de candidatos deste agente (que só considera endpoints com um parâmetro identificador de recurso)."
+    ]
+  },
+  "vulnerabilities": [
+    {
+      "method": "GET",
+      "path": "/api1/user/{api1_id}",
+      "direction": "any",
+      "evidence": "API1UsersController::show valida username/senha do cabeçalho Authorization-Token contra a tabela a_p_i1_users, mas nunca compara o 'id' autenticado com o {api1_id} pedido antes de retornar API1Users::find($id)."
+    },
+    {
+      "method": "PUT",
+      "path": "/api1/user/{api1_id}",
+      "direction": "any",
+      "evidence": "API1UsersController::update tem a mesma ausência de verificação de posse do GET, permitindo alterar o registro de qualquer outro usuário do módulo."
+    }
+  ]
+}
