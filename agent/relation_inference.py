@@ -103,9 +103,9 @@ def infer_relations(spec: OpenAPISpec, use_llm: Optional[bool] = None) -> List[R
 
 
 def _llm_refine(candidates: List[RelationCandidate], model: str) -> List[RelationCandidate]:
-    import anthropic
+    from google import genai
 
-    client = anthropic.Anthropic()
+    client = genai.Client(api_key=Config.GOOGLE_API_KEY) if Config.GOOGLE_API_KEY else genai.Client()
     items = [
         {
             "index": i,
@@ -145,14 +145,16 @@ def _llm_refine(candidates: List[RelationCandidate], model: str) -> List[Relatio
         "(ex.: categoria de produto, enum, código de país).\n\n"
         f"Itens:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
     )
-    response = client.messages.create(
+    interaction = client.interactions.create(
         model=model,
-        max_tokens=4096,
-        output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-        messages=[{"role": "user", "content": prompt}],
+        input=prompt,
+        # "schema_" (com underscore) é o nome de campo correto no SDK
+        # google-genai instalado (verificado por introspecção do pacote —
+        # a documentação pública, no momento em que este código foi escrito,
+        # mostrava "schema" sem underscore, o que causaria erro).
+        response_format={"type": "text", "mime_type": "application/json", "schema_": schema},
     )
-    text = next(b.text for b in response.content if b.type == "text")
-    decisions = {d["index"]: d for d in json.loads(text)["decisions"]}
+    decisions = {d["index"]: d for d in json.loads(interaction.output_text)["decisions"]}
 
     refined: List[RelationCandidate] = []
     for i, candidate in enumerate(candidates):

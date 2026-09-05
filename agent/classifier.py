@@ -163,9 +163,9 @@ def classify_heuristic(result: ExecutionResult) -> Verdict:
 
 
 def _llm_tie_break(result: ExecutionResult, model: str) -> Optional[Verdict]:
-    import anthropic
+    from google import genai
 
-    client = anthropic.Anthropic()
+    client = genai.Client(api_key=Config.GOOGLE_API_KEY) if Config.GOOGLE_API_KEY else genai.Client()
     payload = {
         "endpoint": f"{result.test_case.endpoint.method} {result.test_case.endpoint.path}",
         "attacker": result.test_case.attacker.label,
@@ -202,11 +202,13 @@ def _llm_tie_break(result: ExecutionResult, model: str) -> Optional[Verdict]:
         f"Evidência (JSON):\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     )
     try:
-        response = client.messages.create(
+        interaction = client.interactions.create(
             model=model,
-            max_tokens=1024,
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": schema}},
-            messages=[{"role": "user", "content": prompt}],
+            input=prompt,
+            # Ver nota equivalente em relation_inference.py: "schema_" (com
+            # underscore) é o nome de campo correto no SDK google-genai
+            # instalado, verificado por introspecção do pacote.
+            response_format={"type": "text", "mime_type": "application/json", "schema_": schema},
         )
     except Exception as exc:  # noqa: BLE001
         # Captura ampla e deliberada (ver relation_inference.py para a mesma
@@ -216,8 +218,7 @@ def _llm_tie_break(result: ExecutionResult, model: str) -> Optional[Verdict]:
         print(f"[classifier] Aviso: desempate por LLM falhou ({exc}); mantendo veredito ambíguo.")
         return None
 
-    text = next(b.text for b in response.content if b.type == "text")
-    data = json.loads(text)
+    data = json.loads(interaction.output_text)
     return Verdict(data["result"], data["reason"], "llm", float(data["confidence"]))
 
 

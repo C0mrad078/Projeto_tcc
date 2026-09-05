@@ -5,7 +5,7 @@ Ponto de entrada do pipeline do agente de detecção de BOLA.
 Uso típico:
     python main.py --dry-run     # parser + inferência + geração, sem rede real
     python main.py                 # execução completa contra o vAPI real
-    python main.py --no-llm        # força modo 100% heurístico (sem chamadas à Anthropic)
+    python main.py --no-llm        # força modo 100% heurístico (sem chamadas ao Gemini)
 """
 from __future__ import annotations
 

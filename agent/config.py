@@ -101,9 +101,14 @@ class Config:
         _env("OPENAPI_SPEC_PATH", str(PROJECT_ROOT / "specs" / "vapi_openapi.json"))
     )
 
-    # --- LLM (Anthropic) ---
-    ANTHROPIC_API_KEY: Optional[str] = _env("ANTHROPIC_API_KEY")
-    LLM_MODEL: str = _env("LLM_MODEL", "claude-opus-5")
+    # --- LLM (Google AI Studio / Gemini API) ---
+    # DECISÃO DE DESIGN: o SDK oficial (google-genai) já lê GOOGLE_API_KEY ou
+    # GEMINI_API_KEY sozinho do ambiente; guardamos o valor aqui só para
+    # decidir, de forma explícita, se devemos sequer tentar uma chamada de
+    # LLM (ver relation_inference.py/classifier.py) — não para repassá-lo
+    # manualmente ao cliente em todo lugar.
+    GOOGLE_API_KEY: Optional[str] = _env("GOOGLE_API_KEY") or _env("GEMINI_API_KEY")
+    LLM_MODEL: str = _env("LLM_MODEL", "gemini-3.8-flash")
     USE_LLM_FOR_RELATION_INFERENCE: bool = _env_bool("USE_LLM_FOR_RELATION_INFERENCE", True)
     USE_LLM_FOR_CLASSIFICATION: bool = _env_bool("USE_LLM_FOR_CLASSIFICATION", True)
 
