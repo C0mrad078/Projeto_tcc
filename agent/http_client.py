@@ -112,10 +112,10 @@ def send_request(
             error=str(exc),
         )
     finally:
-        # Pequeno atraso entre requisições: o vAPI roda tipicamente como um
-        # único processo Node/Express de desenvolvimento local, sem
-        # tolerância a concorrência alta. Isso NÃO é uma técnica de evasão de
-        # detecção — é só para não derrubar o servidor de teste local.
+        # Pequeno atraso entre requisições: o vAPI roda via `php artisan
+        # serve` (servidor de desenvolvimento do Laravel, single-threaded),
+        # sem tolerância a concorrência alta. Isso NÃO é uma técnica de
+        # evasão de detecção — é só para não derrubar o servidor de teste local.
         if Config.REQUEST_DELAY_MS > 0:
             time.sleep(Config.REQUEST_DELAY_MS / 1000)
 
