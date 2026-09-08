@@ -131,19 +131,42 @@ Não existe endpoint de login no vAPI — o token é só `base64(username:senha)
 
 ## Rodando o agente
 
+### Modo interativo (recomendado para uso manual)
+
+```bash
+python main.py
+```
+
+Sem nenhum argumento, abre um menu por prompt com as operações mais comuns — dry-run, execução real, execução sem LLM, registro de usuários, cálculo de métricas do último relatório, e o baseline ZAP — sem precisar memorizar flags:
+
+```
+=== Agente de Detecção de BOLA — vAPI ===
+1) Rodar em modo dry-run (sem rede, só parser + inferência + geração)
+2) Rodar execução completa contra o vAPI real
+3) Rodar execução completa sem LLM (só heurística)
+4) Registrar usuários de teste no vAPI (setup_vapi_users.py)
+5) Calcular métricas do último relatório (compute_metrics.py)
+6) Rodar baseline OWASP ZAP (baseline/run_zap_api_scan.sh)
+0) Sair
+```
+
+### Modo via flags (recomendado para scripts/reprodutibilidade)
+
 ```bash
 # Só parser + inferência + geração de casos, sem nenhuma chamada de rede real:
 python main.py --dry-run
 
 # Execução completa contra o vAPI real:
-python main.py
+python main.py --run
 
 # Forçar modo 100% heurístico, sem nenhuma chamada ao Gemini:
-python main.py --no-llm
+python main.py --run --no-llm
 
 # Especificar outra spec:
-python main.py --spec caminho/para/outra_spec.json
+python main.py --run --spec caminho/para/outra_spec.json
 ```
+
+Passar qualquer flag (`--dry-run`, `--run`, etc.) desativa o menu interativo — é o caminho usado nos exemplos deste README daqui para baixo, e o que garante reprodutibilidade num script/pipeline de CI.
 
 Para o vAPI, a spec atual tem 3 operações autenticadas com parâmetro de ID (`GET`/`PUT /api1/user/{api1_id}` e `GET /api5/user/{api5_id}`); cada uma vira 2 casos cruzados (B ataca A, A ataca B), totalizando **6 casos de teste**. Na avaliação atual, os 6 são resolvidos só com a heurística — sem precisar do LLM.
 
