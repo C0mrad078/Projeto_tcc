@@ -235,10 +235,12 @@ ground_truth/
 baseline/
   run_zap_api_scan.sh        Script do baseline OWASP ZAP
   zap_hooks.py                Hook de autenticação para o ZAP
-main.py                       CLI do pipeline
+main.py                       CLI do pipeline (menu interativo + flags)
 setup_vapi_users.py            Registra usuários de teste no vAPI real
 compute_metrics.py              CLI de métricas
-runs/                            Relatórios de execução (gitignored)
+requirements.txt                 Dependências (google-genai, requests, python-dotenv)
+.env.example                      Modelo de configuração (copiar para .env)
+runs/                               Relatórios de execução (gitignored)
 ```
 
 ---
