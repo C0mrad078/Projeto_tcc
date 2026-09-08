@@ -131,24 +131,47 @@ Não existe endpoint de login no vAPI — o token é só `base64(username:senha)
 
 ## Rodando o agente
 
+### Escolhendo o alvo (qual site/spec testar)
+
+O agente **não está travado no vAPI** — ele testa qualquer API REST descrita por uma spec OpenAPI 3.x equivalente. Duas coisas definem o alvo, e as duas são escolhidas na hora de rodar (não hardcoded):
+
+1. **A spec OpenAPI** (`--spec`, ou o prompt "Spec OpenAPI do site a testar" no menu) — descreve os endpoints, parâmetros e requisitos de autenticação do site.
+2. **A URL base do alvo** (`--target-url`, ou o prompt "URL base do alvo" no menu, ou `TARGET_BASE_URL` no `.env`) — onde essa spec está de fato rodando.
+
+> ⚠️ **Toda execução real (não `--dry-run`) contra qualquer alvo exige autorização explícita.** No modo interativo, o menu pede confirmação antes de fazer qualquer chamada HTTP real — recusar cancela a execução sem nenhuma requisição sair da máquina. No modo via flags (scripts/CI), a responsabilidade é de quem escreve o script: o programa imprime um aviso, mas não bloqueia, para não quebrar automação — nunca aponte `--target-url` para um alvo que você não tem permissão para testar.
+>
+> Trocar de alvo (outra instância do vAPI, outro laboratório vulnerável, ou uma API sua com spec equivalente) também exige credenciais de teste compatíveis com esse alvo em `.env` — ver [Registrando usuários de teste](#registrando-usuários-de-teste) e [Achados e limitações conhecidas](#achados-e-limitações-conhecidas) (a resolução de identidade por módulo é específica do modelo de dados do vAPI).
+
 ### Modo interativo (recomendado para uso manual)
 
 ```bash
 python main.py
 ```
 
-Sem nenhum argumento, abre um menu por prompt com as operações mais comuns — dry-run, execução real, execução sem LLM, registro de usuários, cálculo de métricas do último relatório, e o baseline ZAP — sem precisar memorizar flags:
+Sem nenhum argumento, abre um menu por prompt com as operações mais comuns — dry-run, execução real, execução sem LLM, registro de usuários, cálculo de métricas do último relatório, e o baseline ZAP — sem precisar memorizar flags. As opções 1-3 (que fazem alguma forma de teste) sempre perguntam qual spec e qual URL usar antes de rodar:
 
 ```
-=== Agente de Detecção de BOLA — vAPI ===
-1) Rodar em modo dry-run (sem rede, só parser + inferência + geração)
-2) Rodar execução completa contra o vAPI real
+=== Agente de Detecção de BOLA ===
+1) Rodar em modo dry-run (escolher spec, sem rede real)
+2) Rodar execução completa contra um alvo real
 3) Rodar execução completa sem LLM (só heurística)
 4) Registrar usuários de teste no vAPI (setup_vapi_users.py)
 5) Calcular métricas do último relatório (compute_metrics.py)
 6) Rodar baseline OWASP ZAP (baseline/run_zap_api_scan.sh)
 0) Sair
+
+Escolha uma opção: 2
+
+--- Alvo do teste ---
+Spec OpenAPI do site a testar [specs/vapi_openapi.json]:
+URL base do alvo (onde a spec acima está rodando) [http://localhost:8000/vapi]:
+
+Você está prestes a testar: http://localhost:8000/vapi  (spec: specs/vapi_openapi.json)
+Você TEM AUTORIZAÇÃO EXPLÍCITA para testar este alvo — é seu, ou você tem
+permissão por escrito do dono/responsável? Digite 'sim' para confirmar:
 ```
+
+Aperte Enter em qualquer prompt para aceitar o valor padrão mostrado entre colchetes.
 
 ### Modo via flags (recomendado para scripts/reprodutibilidade)
 
@@ -156,14 +179,14 @@ Sem nenhum argumento, abre um menu por prompt com as operações mais comuns —
 # Só parser + inferência + geração de casos, sem nenhuma chamada de rede real:
 python main.py --dry-run
 
-# Execução completa contra o vAPI real:
+# Execução completa contra o alvo do .env (TARGET_BASE_URL):
 python main.py --run
+
+# Execução completa contra OUTRO alvo, sem editar o .env:
+python main.py --run --spec caminho/para/outra_spec.json --target-url http://localhost:9000/base
 
 # Forçar modo 100% heurístico, sem nenhuma chamada ao Gemini:
 python main.py --run --no-llm
-
-# Especificar outra spec:
-python main.py --run --spec caminho/para/outra_spec.json
 ```
 
 Passar qualquer flag (`--dry-run`, `--run`, etc.) desativa o menu interativo — é o caminho usado nos exemplos deste README daqui para baixo, e o que garante reprodutibilidade num script/pipeline de CI.

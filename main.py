@@ -3,12 +3,13 @@
 Ponto de entrada do pipeline do agente de detecção de BOLA.
 
 Uso interativo (recomendado para uso manual/exploração):
-    python main.py                 # abre um menu por prompt
+    python main.py                 # abre um menu por prompt, com escolha de alvo
 
 Uso via flags (recomendado para scripts/reprodutibilidade — ver README):
-    python main.py --dry-run     # parser + inferência + geração, sem rede real
-    python main.py --run           # execução completa contra o vAPI real
-    python main.py --run --no-llm  # força modo 100% heurístico (sem chamadas ao Gemini)
+    python main.py --dry-run                                  # sem rede real, contra a spec default (vAPI)
+    python main.py --run                                        # execução completa contra o alvo do .env
+    python main.py --run --spec outra_spec.json --target-url http://localhost:9000/base
+    python main.py --run --no-llm                                # força modo 100% heurístico
 """
 from __future__ import annotations
 
@@ -61,7 +62,7 @@ def _compute_metrics_on_latest() -> None:
         return
     ground_truth = PROJECT_ROOT / "ground_truth" / "vapi.json"
     if not ground_truth.exists():
-        print(f"[main] Gabarito não encontrado em {ground_truth}.")
+        print(f"[main] Gabarito não encontrado em {ground_truth}. Métricas exigem um gabarito para o alvo testado.")
         return
     subprocess.run(
         [sys.executable, "compute_metrics.py", "--run", str(latest), "--ground-truth", str(ground_truth)],
@@ -69,10 +70,59 @@ def _compute_metrics_on_latest() -> None:
     )
 
 
+def _choose_target(require_auth_confirmation: bool) -> Optional[Path]:
+    """
+    Pergunta ao usuário QUAL SITE/SPEC testar antes de rodar, em vez de
+    assumir sempre o vAPI local — é o que permite apontar este agente para
+    outro alvo (outra instância do vAPI noutra porta, outro laboratório
+    vulnerável, ou qualquer API sua com uma spec OpenAPI equivalente) sem
+    editar código.
+
+    Retorna o caminho da spec escolhida, ou None se o usuário cancelar (spec
+    inexistente, ou recusa a confirmação de autorização).
+
+    DECISÃO DE DESIGN: a confirmação de autorização só é pedida para
+    execuções REAIS (`require_auth_confirmation=True`, chamadas HTTP de
+    verdade) — o modo --dry-run não faz nenhuma requisição de rede, então não
+    há nada a autorizar. Isso opera estruturalmente a regra "nunca teste sem
+    autorização explícita" em vez de depender só de lembrete em conversa.
+    """
+    print("\n--- Alvo do teste ---")
+    default_spec = Config.OPENAPI_SPEC_PATH
+    spec_input = input(f"Spec OpenAPI do site a testar [{default_spec}]: ").strip()
+    spec_path = Path(spec_input) if spec_input else default_spec
+
+    if not spec_path.exists():
+        print(f"[main] Arquivo de spec não encontrado: {spec_path}")
+        return None
+
+    default_url = Config.TARGET_BASE_URL
+    url_input = input(f"URL base do alvo (onde a spec acima está rodando) [{default_url}]: ").strip()
+    if url_input:
+        Config.TARGET_BASE_URL = url_input
+
+    if require_auth_confirmation:
+        print(f"\nVocê está prestes a testar: {Config.TARGET_BASE_URL}  (spec: {spec_path})")
+        confirm = (
+            input(
+                "Você TEM AUTORIZAÇÃO EXPLÍCITA para testar este alvo — é seu, "
+                "ou você tem permissão por escrito do dono/responsável? "
+                "Digite 'sim' para confirmar: "
+            )
+            .strip()
+            .lower()
+        )
+        if confirm != "sim":
+            print("[main] Execução cancelada — sem confirmação de autorização.")
+            return None
+
+    return spec_path
+
+
 MENU = """
-=== Agente de Detecção de BOLA — vAPI ===
-1) Rodar em modo dry-run (sem rede, só parser + inferência + geração)
-2) Rodar execução completa contra o vAPI real
+=== Agente de Detecção de BOLA ===
+1) Rodar em modo dry-run (escolher spec, sem rede real)
+2) Rodar execução completa contra um alvo real
 3) Rodar execução completa sem LLM (só heurística)
 4) Registrar usuários de teste no vAPI (setup_vapi_users.py)
 5) Calcular métricas do último relatório (compute_metrics.py)
@@ -96,11 +146,17 @@ def run_interactive_menu() -> None:
             print("Até mais.")
             return
         elif choice == "1":
-            _run(dry_run=True, no_llm=False)
+            spec = _choose_target(require_auth_confirmation=False)
+            if spec is not None:
+                _run(dry_run=True, no_llm=False, spec=spec)
         elif choice == "2":
-            _run(dry_run=False, no_llm=False)
+            spec = _choose_target(require_auth_confirmation=True)
+            if spec is not None:
+                _run(dry_run=False, no_llm=False, spec=spec)
         elif choice == "3":
-            _run(dry_run=False, no_llm=True)
+            spec = _choose_target(require_auth_confirmation=True)
+            if spec is not None:
+                _run(dry_run=False, no_llm=True, spec=spec)
         elif choice == "4":
             subprocess.run([sys.executable, "setup_vapi_users.py"], cwd=PROJECT_ROOT)
         elif choice == "5":
@@ -126,7 +182,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--spec", type=Path, default=None,
-        help="Caminho da especificação OpenAPI (default: specs/vapi_openapi.json).",
+        help="Caminho da especificação OpenAPI do site a testar (default: specs/vapi_openapi.json).",
+    )
+    parser.add_argument(
+        "--target-url", type=str, default=None,
+        help="URL base do alvo, sobrescrevendo TARGET_BASE_URL do .env (ex.: http://localhost:9000/base).",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -141,6 +201,15 @@ def main() -> None:
         help="Imprime só o resumo final, sem o JSON completo no stdout (o relatório completo sempre é salvo em ./runs/).",
     )
     args = parser.parse_args()
+
+    if args.target_url:
+        Config.TARGET_BASE_URL = args.target_url
+
+    if not args.dry_run:
+        # Aviso não-bloqueante (não interativo, para não quebrar scripts/CI):
+        # execução real contra QUALQUER alvo exige autorização explícita —
+        # ver README, seção "Escopo de uso".
+        print(f"[main] Execução real contra: {Config.TARGET_BASE_URL} — confirme que você tem autorização para isso.")
 
     use_llm_relation_inference = None
     if args.no_llm:
