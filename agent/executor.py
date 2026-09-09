@@ -69,8 +69,19 @@ class Executor:
         cache_key = (endpoint.method, endpoint.path, test_case.victim.label)
         if cache_key not in self._baseline_cache:
             own_substitutions = {p.name: test_case.victim.resource_id for p in endpoint.path_params}
+            # BUG REAL ENCONTRADO E CORRIGIDO (exercício do caso ambíguo de
+            # demonstração, demo/mock_server.py): quando o parâmetro
+            # candidato mora em query (não em path), o baseline sem
+            # `query_params` saía incompleto — o servidor recusava a
+            # requisição (ex.: "report_id é obrigatório"), mascarando a
+            # comparação diferencial do classifier. `test_case.query_params`
+            # já é montado por test_generator.py com o ID da VÍTIMA como
+            # valor (usado no ataque); reaproveitá-lo aqui, com o token da
+            # própria vítima, é exatamente a requisição "dona acessando o
+            # próprio recurso" que o baseline precisa.
             self._baseline_cache[cache_key] = self._do_request(
-                "GET", endpoint, test_case.victim, own_substitutions
+                "GET", endpoint, test_case.victim, own_substitutions,
+                query_params=test_case.query_params or None,
             )
         return self._baseline_cache[cache_key]
 
@@ -87,7 +98,15 @@ class Executor:
         if get_endpoint is None:
             return None
         own_substitutions = {p.name: test_case.victim.resource_id for p in get_endpoint.path_params}
-        return self._do_request("GET", get_endpoint, test_case.victim, own_substitutions)
+        # Mesma correção aplicada em `_get_baseline`: se o identificador do
+        # recurso mora em query (não em path), a verificação também precisa
+        # desse parâmetro — assume que o GET homólogo usa o mesmo nome/local
+        # de parâmetro que o candidato original (mesma suposição já feita
+        # por `_find_get_counterpart`, que casa só por path).
+        return self._do_request(
+            "GET", get_endpoint, test_case.victim, own_substitutions,
+            query_params=test_case.query_params or None,
+        )
 
     def run(self, test_case: TestCase) -> ExecutionResult:
         baseline = self._get_baseline(test_case)

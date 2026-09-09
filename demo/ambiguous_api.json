@@ -1,0 +1,63 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Demo - caso genuinamente ambíguo (mecanismo do modo hybrid)",
+    "version": "0.1.0",
+    "description": "Spec do servidor local demo/mock_server.py. NÃO faz parte da avaliação do vAPI — existe só para demonstrar o modo 'hybrid' decidindo, com uma chamada real ao LLM, um caso que a heurística sozinha genuinamente não resolve. Ver docstring de demo/mock_server.py para por que a ambiguidade é real, não fabricada."
+  },
+  "servers": [{ "url": "http://localhost:8899" }],
+  "components": {
+    "securitySchemes": {
+      "AuthToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization-Token",
+        "description": "Mesmo esquema do vAPI: base64(username:senha)."
+      }
+    }
+  },
+  "security": [{ "AuthToken": [] }],
+  "paths": {
+    "/demo/user": {
+      "post": {
+        "operationId": "demo_register",
+        "summary": "Registro de usuário (demo).",
+        "x-confidence": "confirmed",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": { "type": "string" },
+                  "password": { "type": "string" }
+                },
+                "required": ["username", "password"]
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Usuário criado." } }
+      }
+    },
+    "/demo/report": {
+      "get": {
+        "operationId": "demo_get_report",
+        "summary": "Obtém um relatório por report_id — vulnerável a BOLA de propósito.",
+        "x-confidence": "confirmed",
+        "description": "'report_id' fica na faixa ambígua da heurística de relation_inference.py (query+GET = score 0.5) — ver docstring de mock_server.py.",
+        "parameters": [
+          {
+            "name": "report_id",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "Dados do relatório." } }
+      }
+    }
+  }
+}

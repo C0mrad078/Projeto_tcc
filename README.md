@@ -25,6 +25,7 @@ BOLA depende de uma relação de autorização entre um usuário e um recurso �
 - [Arquitetura híbrida](#arquitetura-híbrida)
 - [Pipeline](#pipeline)
 - [Modos experimentais](#modos-experimentais)
+- [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração)
 - [Rastreabilidade de decisão e telemetria de LLM](#rastreabilidade-de-decisão-e-telemetria-de-llm)
 - [Requisitos e instalação](#requisitos-e-instalação)
 - [Subindo o vAPI](#subindo-o-vapi)
@@ -112,6 +113,28 @@ Três modos, controlados por `AGENT_MODE` no `.env`, `--mode` na CLI, ou pelo me
 `--dry-run` nunca chama o LLM, independente do modo pedido (mesmo em `llm`) — é uma trava explícita, não um acidente: testado empiricamente, sem ela `--dry-run --mode llm` fazia uma chamada real ao Gemini (~9s, ~1000 tokens), o que contradiz a promessa de "sem rede real" do modo offline.
 
 **Achado real ao testar o modo `llm` contra o vAPI**: forçar reavaliação de todos os 6 casos de teste + 3 candidatos de inferência gerou até 9 chamadas ao Gemini numa única execução; 4 delas estouraram `LLM_TIMEOUT_S` (30s). O sistema degradou corretamente para o veredito heurístico em cada uma (é exatamente o comportamento de fallback que o design pretende), mas o resultado final teve um caso `ambiguous` que os modos `heuristic`/`hybrid` não têm — evidência real de que "forçar mais LLM" não é estritamente melhor, e uma motivação concreta para o modo `hybrid` ser o recomendado.
+
+## Caso ambíguo de demonstração
+
+O vAPI (nosso ambiente de avaliação) não tem nenhum caso genuinamente ambíguo — os 6 candidatos/vereditos são todos claros o suficiente para a heurística sozinha (ver "Limitações"). Para exercitar o modo `hybrid` de verdade (decisão real por LLM, não forçada como no modo `llm`), construímos `demo/mock_server.py`: um servidor HTTP local, mínimo e propositalmente vulnerável, com um endpoint (`GET /demo/report?report_id=<id>`) cuja ambiguidade é uma **consequência real do código**, não uma alegação:
+
+- `report_id` está em `query` + `GET` → score heurístico = 0.5, exatamente na faixa ambígua de `relation_inference.py` (entre 0.3 e 0.7).
+- A resposta nunca contém o ID numérico da vítima em texto puro (só um `owner_note` com o *username* dela) e nunca é idêntica ao baseline (um `generated_at` real muda a cada chamada) — então nenhuma das duas regras de confirmação de `classifier.py` dispara sozinha.
+
+**Este servidor não faz parte da avaliação do vAPI** — não entra em `ground_truth/vapi.json` nem nas métricas do TCC. É só uma prova de mecanismo.
+
+**Resultado real (não fabricado)**, rodando `python main.py --run --mode hybrid --spec demo/ambiguous_api.json --target-url http://localhost:8899`:
+
+- Candidato `report_id`: `decision_source="hybrid"`, confiança auto-reportada do modelo = 0.95, motivo: *"Relatórios frequentemente contêm informações sensíveis ou de acesso restrito, tornando este identificador um candidato primário para verificação de BOLA/IDOR..."*
+- Veredito do caso A→B: `decision_source="hybrid"`, confiança 0.95, motivo: *"O atacante (usuário A) enviou uma requisição para o recurso pertencente à vítima (usuário B, ID 2) e obteve resposta HTTP 200 com os dados do relatório confidencial ('RPT-002'), sem que o sistema realizasse a validação de autorização em nível de objeto (BOLA/IDOR)."*
+
+Ou seja: **o modo `hybrid` funciona ponta a ponta** — a heurística genuinamente não decide, o LLM é chamado, e a decisão final é correta e rastreável como `hybrid`, exatamente como projetado.
+
+### Três achados reais deste exercício
+
+1. **Bug real encontrado e corrigido**: `Executor._get_baseline()`/`_get_verification()` só substituíam parâmetros de **path** na requisição de controle (vítima acessando o próprio recurso) — nunca os de **query**. Para `report_id` (query), o baseline saía incompleto (`{"error": "report_id é obrigatório"}`), mascarando a comparação diferencial do classifier. Corrigido reaproveitando `test_case.query_params` (já montado com o ID da própria vítima) também no baseline/verificação. Sem impacto na avaliação do vAPI (candidatos lá são todos em path) — revalidado sem regressão (4 confirmed / 2 not_found, F1=1.000) após a correção.
+2. **Falso positivo heurístico ainda não corrigido**: o corretor de fronteira de dígito de `classifier._body_contains()` (ver "Limitações") não cobre o caso de um ID numérico coincidir com o final de um identificador alfanumérico — o username gerado `demoaea06a1` "contém" o ID `1` da vítima A pela heurística, mesmo sem relação nenhuma. Não corrigido agora (uma correção robusta exigiria repensar a busca por substring inteira, com risco de introduzir falsos negativos em outros formatos de ID) — registrado como limitação aberta.
+3. **Limite de cota do Google AI Studio**: o tier gratuito do `gemini-3.8-flash` retornou `429 RESOURCE_EXHAUSTED` (limite de 20 requisições/dia observado) durante os testes deste exercício — uma restrição operacional real que afeta a reprodutibilidade de execuções repetidas em modo `llm`/`hybrid` com chave gratuita, relevante para quem for reproduzir este experimento.
 
 ## Rastreabilidade de decisão e telemetria de LLM
 
@@ -296,6 +319,7 @@ tests/                          suíte pytest (LLM mockado)
 specs/vapi_openapi.json          spec OpenAPI do vAPI (reconstruída e corrigida manualmente)
 ground_truth/vapi.json            gabarito validado por leitura de código-fonte
 baseline/                          script + hook do baseline OWASP ZAP
+demo/                               servidor + spec do caso ambíguo de demonstração (NÃO faz parte da avaliação do vAPI)
 main.py · setup_vapi_users.py · compute_metrics.py
 requirements.txt · requirements-dev.txt
 ```
@@ -312,8 +336,9 @@ Documentadas de propósito — o objetivo é deixar a metodologia cientificament
 - **Avaliação concentrada no vAPI**: nenhum segundo ambiente vulnerável foi testado até agora.
 - **Dependência da qualidade do OpenAPI**: ver seção acima.
 - **Componentes ainda específicos do vAPI**: `setup_vapi_users.py` inteiro, e a convenção de identidade por módulo em `Config.identity()` (assume que cada "módulo" — primeiro segmento do path — tem sua própria base de usuários; um alvo com uma única base de usuários compartilhada entre todos os endpoints exigiria uma simplificação equivalente, ainda não implementada). O restante do pipeline (`openapi_parser`, `relation_inference`, `test_generator`, `http_client`, `executor`, `classifier`) é genérico.
-- **LLM acionado só em ambiguidade (modo `hybrid`)**: no conjunto atual, isso significa que o LLM nunca é chamado de fato — os 6 casos são todos claros o suficiente para a heurística. Isso não é um defeito do design híbrido; é uma limitação do conjunto experimental atual, que ainda não inclui um caso genuinamente ambíguo. O modo `llm` existe para pelo menos observar o comportamento do modelo nesse cenário, mas força artificialmente a situação em vez de refletir um caso real.
-- **Modo `llm` sob volume real esbarra em timeout**: 4 de 9 chamadas forçadas expiraram em 30s numa execução real (ver "Modos experimentais" acima) — não invalida o design (o fallback funcionou), mas mostra que esse modo não escala trivialmente sem ajuste de timeout/paralelismo/retry.
+- **LLM acionado só em ambiguidade (modo `hybrid`) — no vAPI, nunca de fato**: os 6 casos do vAPI são todos claros o suficiente para a heurística; o modo `hybrid` nunca precisou decidir nada nessa avaliação. Isso não é um defeito do design híbrido — é uma limitação do conjunto experimental do vAPI especificamente. Confirmamos separadamente (ver [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração), fora da avaliação do vAPI) que o mecanismo funciona corretamente quando a ambiguidade é real.
+- **Chamadas ao LLM esbarram em timeout/limite de cota sob volume**: no modo `llm` forçado, 4 de 9 chamadas expiraram em 30s numa execução real contra o vAPI; no exercício do caso ambíguo de demonstração, uma chamada retornou `429` (limite de 20 req/dia do tier gratuito do Google AI Studio). Em ambos os casos o fallback para a heurística funcionou como projetado — mas isso mostra que execuções repetidas/em lote com uma chave gratuita têm uma restrição operacional real.
+- **Falso positivo heurístico com ID coincidindo em identificador alfanumérico**: `classifier._body_contains()` já evita casar um ID numérico com outro número no corpo (ex.: "1" com "201"), mas não evita casar com o final de um identificador alfanumérico que termine no mesmo dígito (ex.: username `demoaea06a1` "contém" o ID `1`) — encontrado no exercício do caso ambíguo de demonstração, ainda não corrigido (uma correção robusta exigiria repensar a estratégia de busca por substring).
 - **Duas identidades autenticadas, path único de descoberta de objeto**: sem endpoint de listagem no vAPI, o "objeto conhecido" de cada identidade é sempre o próprio perfil — não generaliza para recursos subordinados (ex.: pedidos de um usuário) sem uma fonte adicional de identificadores.
 - **Endpoints com múltiplos parâmetros de identificador**: o gerador de casos substitui todos pelo ID da vítima — correto para os endpoints do vAPI avaliados (um parâmetro cada), incorreto para algo como `/users/{user_id}/orders/{order_id}`.
 - **Autorização baseada em contexto externo** (ex.: uma regra de negócio que depende de estado fora da própria API) não é modelada — o agente só enxerga o que a API expõe via HTTP.
@@ -324,16 +349,18 @@ Documentadas de propósito — o objetivo é deixar a metodologia cientificament
 - A comparação com o ZAP usa uma configuração deliberadamente mínima (ver tabela na seção do ZAP) — não representa o teto de capacidade do ZAP quando configurado por um analista com o mesmo conhecimento de domínio que o agente recebe via OpenAPI.
 - O ground truth foi construído por um único revisor (leitura do código-fonte), sem segunda validação independente.
 - Todas as execuções até agora rodaram num único ambiente de laboratório (vAPI), num único momento — não há dados sobre estabilidade ao longo do tempo ou sob carga de rede diferente.
-- O modo `hybrid` nunca foi exercitado com um caso genuinamente ambíguo real (ver Limitações) — sua vantagem sobre `heuristic` permanece teórica até que o conjunto experimental inclua um caso assim.
+- O modo `hybrid` nunca foi exercitado com um caso genuinamente ambíguo **dentro da avaliação formal do vAPI** — foi validado separadamente, num servidor de demonstração fora do escopo de avaliação (ver [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração)). Sua vantagem sobre `heuristic` dentro do conjunto experimental do TCC permanece teórica até que o vAPI (ou um segundo ambiente) inclua um caso assim nativamente.
 
 ## Próximos passos
 
 Em ordem de prioridade recomendada:
 
-1. **Adicionar um segundo ambiente vulnerável** (ex.: crAPI, DVGA) — generaliza a avaliação além de um único alvo.
-2. **Criar casos genuinamente ambíguos** para exercitar o modo `hybrid` de verdade (hoje ele nunca precisa decidir nada, porque o vAPI só tem casos claros).
+1. **Adicionar um segundo ambiente vulnerável** (ex.: crAPI, DVGA) — generaliza a avaliação além de um único alvo, e é o caminho mais provável para um caso ambíguo *nativo* (dentro da avaliação formal, não num servidor de demonstração à parte).
+2. ~~Criar casos genuinamente ambíguos para exercitar o modo `hybrid`~~ — feito fora da avaliação formal, ver [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração). Achados dessa exploração: um bug real de baseline corrigido, um falso positivo heurístico ainda aberto, e o limite de cota do tier gratuito do Gemini.
 3. **Estudo de ablação formal**: Heurística vs. Híbrido vs. LLM vs. ZAP, usando a exportação CSV/JSON com `experiment_id`/`mode` já preparada para isso.
 4. **Ampliar o ground truth** (mais endpoints, mais de um ambiente, segunda validação independente).
 5. **Melhorar a generalização**: extrair uma interface formal de "adapter" (hoje `setup_vapi_users.py` e `Config.identity()` são vAPI-específicos por convenção, não por contrato).
 6. **Tornar a autenticação totalmente configurável** por spec (hoje o esquema de header customizado é assumido; um alvo com OAuth/JWT padrão exigiria ajuste manual em `http_client.py`).
 7. **Baseline ZAP com Access Control Testing** configurado (2 usuários + regras de acesso), como segunda linha de base mais forte para a comparação.
+8. **Corrigir o falso positivo heurístico de ID coincidente em identificador alfanumérico** (ver Limitações).
+9. **Considerar um plano pago ou cota maior no Google AI Studio** para execuções repetidas do modo `llm`/`hybrid` em lote, dado o limite de 20 req/dia observado no tier gratuito.
