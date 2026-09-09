@@ -74,6 +74,9 @@ class OpenAPISpec:
     base_url: str
     endpoints: List[Endpoint]
     security_schemes: Dict[str, Any]
+    # Título declarado em info.title — usado como rótulo legível do alvo nos
+    # relatórios (ex.: "vAPI"). String vazia se a spec não declarar info.title.
+    title: str = ""
 
 
 def _resolve_ref(ref: str, document: Dict[str, Any]) -> Any:
@@ -211,4 +214,5 @@ def parse_openapi(spec_path: Path) -> OpenAPISpec:
                 )
             )
 
-    return OpenAPISpec(base_url=base_url, endpoints=endpoints, security_schemes=security_schemes)
+    title = (document.get("info") or {}).get("title", "")
+    return OpenAPISpec(base_url=base_url, endpoints=endpoints, security_schemes=security_schemes, title=title)

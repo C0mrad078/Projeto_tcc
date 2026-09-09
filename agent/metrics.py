@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 Case = Tuple[str, str, str]  # (method, path, direction)
 
@@ -100,4 +100,83 @@ def compute_metrics(
         f1=f1,
         fp_cases=sorted(fp),
         fn_cases=sorted(fn),
+    )
+
+
+@dataclass
+class HybridUsageResult:
+    """
+    Métricas de uso da arquitetura híbrida (Fase 5 da refatoração
+    metodológica do TCC) — complementam VP/FP/FN/Precisão/Revocação/F1 com
+    visibilidade sobre COMO o agente chegou a cada veredito.
+    """
+
+    total_test_cases: int
+    heuristic_decisions: int
+    llm_decisions: int
+    hybrid_decisions: int
+    avg_heuristic_decision_time_ms: Optional[float]
+    avg_llm_decision_time_ms: Optional[float]
+    llm_calls: int
+    llm_errors: int
+    llm_fallbacks: int
+    input_tokens_total: Optional[int]
+    output_tokens_total: Optional[int]
+    total_tokens_total: Optional[int]
+
+
+def compute_hybrid_usage(report: Dict[str, Any]) -> HybridUsageResult:
+    """
+    Lê `report["results"]` (vereditos de classificação, cada um com
+    `decision.decision_source`/`decision.duration_ms`) e
+    `report["llm_usage"]["summary"]` (telemetria agregada de todas as
+    chamadas ao LLM na execução — de relation_inference.py E classifier.py)
+    para montar as métricas de uso híbrido.
+
+    ESCOPO: `avg_heuristic_decision_time_ms`/`avg_llm_decision_time_ms` só
+    consideram decisões de CLASSIFICAÇÃO (report["results"]) — é ali que a
+    comparação de tempo heurística-vs-LLM é metodologicamente interessante
+    (a decisão de inferência de relação em relation_inference.py é uma
+    checagem de regex de custo desprezível, não um ponto de comparação de
+    latência relevante). `llm_calls`/`llm_errors`/`llm_fallbacks`/tokens,
+    por outro lado, cobrem TODAS as chamadas ao LLM da execução, nos dois
+    módulos.
+    """
+    results = report.get("results", [])
+    heuristic_times: List[float] = []
+    llm_times: List[float] = []
+    counts = {"heuristic": 0, "llm": 0, "hybrid": 0}
+
+    for entry in results:
+        decision = entry.get("decision")
+        if not decision:
+            continue
+        source = decision.get("decision_source")
+        if source in counts:
+            counts[source] += 1
+        duration = decision.get("duration_ms")
+        if duration is None:
+            continue
+        if source == "heuristic":
+            heuristic_times.append(duration)
+        elif source in ("llm", "hybrid"):
+            llm_times.append(duration)
+
+    llm_summary = report.get("llm_usage", {}).get("summary", {})
+
+    return HybridUsageResult(
+        total_test_cases=len(results),
+        heuristic_decisions=counts["heuristic"],
+        llm_decisions=counts["llm"],
+        hybrid_decisions=counts["hybrid"],
+        avg_heuristic_decision_time_ms=(
+            sum(heuristic_times) / len(heuristic_times) if heuristic_times else None
+        ),
+        avg_llm_decision_time_ms=(sum(llm_times) / len(llm_times) if llm_times else None),
+        llm_calls=llm_summary.get("total_calls", 0),
+        llm_errors=llm_summary.get("errors", 0),
+        llm_fallbacks=llm_summary.get("fallbacks_used", 0),
+        input_tokens_total=llm_summary.get("input_tokens_total"),
+        output_tokens_total=llm_summary.get("output_tokens_total"),
+        total_tokens_total=llm_summary.get("total_tokens_total"),
     )

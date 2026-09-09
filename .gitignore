@@ -4,5 +4,7 @@ __pycache__/
 .venv/
 venv/
 runs/*.json
+runs/*.csv
 baseline/zap_work/
+.pytest_cache/
 .DS_Store

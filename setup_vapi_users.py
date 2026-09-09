@@ -18,6 +18,18 @@ DECISÕES DE DESIGN CONFIRMADAS POR LEITURA DO CÓDIGO-FONTE DO VAPI (Laravel):
   (colunas NOT NULL sem default):
     POST /api1/user -> {username, name, course, password}   (username é UNIQUE)
     POST /api5/user -> {username, password, name, address, mobileno}
+
+NOTA DE GENERALIZAÇÃO (Fase 8 da refatoração metodológica do TCC): este
+script é o "adapter" específico do vAPI — a ÚNICA peça do projeto que sabe o
+formato exato de registro de usuário deste alvo em particular. O CORE do
+agente (agent/relation_inference.py, test_generator.py, executor.py,
+classifier.py) é genérico: não sabe nada sobre "username"/"course"/vAPI, só
+consome Identity (username/password/resource_id/token) e uma spec OpenAPI.
+Portar o agente para outro alvo significa escrever um script equivalente a
+este (registro de usuários daquele alvo) — não tocar no core. Ainda não
+existe uma interface formal de "adapter" (ex.: uma classe abstrata) porque só
+há um alvo validado até agora; ver README, seção "Limitações", para essa
+lacuna registrada explicitamente.
 """
 from __future__ import annotations
 

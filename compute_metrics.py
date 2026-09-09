@@ -12,7 +12,13 @@ import argparse
 import json
 from pathlib import Path
 
-from agent.metrics import compute_metrics, load_all_evaluated, load_ground_truth, load_predicted_positive
+from agent.metrics import (
+    compute_hybrid_usage,
+    compute_metrics,
+    load_all_evaluated,
+    load_ground_truth,
+    load_predicted_positive,
+)
 
 
 def main() -> None:
@@ -28,6 +34,7 @@ def main() -> None:
 
     result = compute_metrics(ground_truth, predicted, evaluated)
 
+    print(f"Modo: {report.get('mode', '?')}  |  Alvo: {report.get('target', '?')}")
     print(f"Verdadeiros positivos: {result.true_positives}")
     print(f"Falsos positivos:      {result.false_positives}")
     print(f"Falsos negativos:      {result.false_negatives}")
@@ -43,6 +50,23 @@ def main() -> None:
         print("\nCasos de falso negativo:")
         for case in result.fn_cases:
             print(f"  - {case}")
+
+    usage = compute_hybrid_usage(report)
+    print("\n--- Uso da arquitetura híbrida ---")
+    print(f"Total de casos de teste:  {usage.total_test_cases}")
+    print(f"Decisões heurísticas:     {usage.heuristic_decisions}")
+    print(f"Decisões híbridas:        {usage.hybrid_decisions}")
+    print(f"Decisões só-LLM:          {usage.llm_decisions}")
+    print(f"Chamadas ao LLM:          {usage.llm_calls} (erros: {usage.llm_errors}, fallbacks: {usage.llm_fallbacks})")
+    if usage.avg_heuristic_decision_time_ms is not None:
+        print(f"Tempo médio — heurística: {usage.avg_heuristic_decision_time_ms:.2f} ms")
+    if usage.avg_llm_decision_time_ms is not None:
+        print(f"Tempo médio — LLM:        {usage.avg_llm_decision_time_ms:.2f} ms")
+    if usage.total_tokens_total is not None:
+        print(
+            f"Tokens — entrada: {usage.input_tokens_total} | "
+            f"saída: {usage.output_tokens_total} | total: {usage.total_tokens_total}"
+        )
 
 
 if __name__ == "__main__":

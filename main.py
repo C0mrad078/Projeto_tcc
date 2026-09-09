@@ -3,13 +3,14 @@
 Ponto de entrada do pipeline do agente de detecção de BOLA.
 
 Uso interativo (recomendado para uso manual/exploração):
-    python main.py                 # abre um menu por prompt, com escolha de alvo
+    python main.py                 # abre um menu por prompt, com escolha de alvo e modo
 
 Uso via flags (recomendado para scripts/reprodutibilidade — ver README):
     python main.py --dry-run                                  # sem rede real, contra a spec default (vAPI)
-    python main.py --run                                        # execução completa contra o alvo do .env
+    python main.py --run                                        # modo hybrid (recomendado), contra o alvo do .env
+    python main.py --run --mode heuristic                         # só heurística, LLM nunca chamado
+    python main.py --run --mode llm                                 # experimental: LLM força reavaliação de tudo
     python main.py --run --spec outra_spec.json --target-url http://localhost:9000/base
-    python main.py --run --no-llm                                # força modo 100% heurístico
 """
 from __future__ import annotations
 
@@ -20,30 +21,32 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agent.config import Config
+from agent.config import Config, Mode, VALID_MODES
 from agent.orchestrator import run_pipeline
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def _print_summary(report: Dict[str, Any], full_json: bool = False) -> None:
-    print(f"\n[main] {report['test_cases_generated']} caso(s) de teste gerado(s).")
+    print(f"\n[main] modo={report.get('mode')}  {report['test_cases_generated']} caso(s) de teste gerado(s).")
     if not report.get("dry_run"):
         counts: Dict[str, int] = {}
         for entry in report["results"]:
             counts[entry["verdict"]] = counts.get(entry["verdict"], 0) + 1
         print(f"[main] Vereditos: {counts}")
+        hybrid = report.get("hybrid_usage", {})
+        print(
+            f"[main] Decisões — heurística: {hybrid.get('heuristic_decisions')} | "
+            f"híbrida: {hybrid.get('hybrid_decisions')} | llm: {hybrid.get('llm_decisions')} "
+            f"(chamadas ao LLM: {hybrid.get('llm_calls')}, erros: {hybrid.get('llm_errors')})"
+        )
     if full_json:
         print(json.dumps(report, indent=2, ensure_ascii=False)[:4000])
 
 
-def _run(dry_run: bool, no_llm: bool, spec: Optional[Path] = None) -> None:
-    use_llm_relation_inference = None
-    if no_llm:
-        use_llm_relation_inference = False
-        Config.USE_LLM_FOR_CLASSIFICATION = False
+def _run(dry_run: bool, mode: Mode, spec: Optional[Path] = None) -> None:
     try:
-        report = run_pipeline(spec_path=spec, dry_run=dry_run, use_llm_relation_inference=use_llm_relation_inference)
+        report = run_pipeline(spec_path=spec, dry_run=dry_run, mode=mode)
     except RuntimeError as exc:
         print(f"\n[main] Erro: {exc}")
         return
@@ -58,7 +61,7 @@ def _find_latest_report() -> Optional[Path]:
 def _compute_metrics_on_latest() -> None:
     latest = _find_latest_report()
     if latest is None:
-        print("[main] Nenhum relatório encontrado em ./runs/. Rode uma execução real primeiro (opção 2).")
+        print("[main] Nenhum relatório encontrado em ./runs/. Rode uma execução real primeiro (opção 2, 3 ou 4).")
         return
     ground_truth = PROJECT_ROOT / "ground_truth" / "vapi.json"
     if not ground_truth.exists():
@@ -122,11 +125,12 @@ def _choose_target(require_auth_confirmation: bool) -> Optional[Path]:
 MENU = """
 === Agente de Detecção de BOLA ===
 1) Rodar em modo dry-run (escolher spec, sem rede real)
-2) Rodar execução completa contra um alvo real
-3) Rodar execução completa sem LLM (só heurística)
-4) Registrar usuários de teste no vAPI (setup_vapi_users.py)
-5) Calcular métricas do último relatório (compute_metrics.py)
-6) Rodar baseline OWASP ZAP (baseline/run_zap_api_scan.sh)
+2) Rodar execução completa — modo hybrid (recomendado)
+3) Rodar execução completa — modo heuristic (LLM nunca chamado)
+4) Rodar execução completa — modo llm (experimental; força reavaliação por LLM)
+5) Registrar usuários de teste no vAPI (setup_vapi_users.py)
+6) Calcular métricas do último relatório (compute_metrics.py)
+7) Rodar baseline OWASP ZAP (baseline/run_zap_api_scan.sh)
 0) Sair
 """
 
@@ -148,20 +152,29 @@ def run_interactive_menu() -> None:
         elif choice == "1":
             spec = _choose_target(require_auth_confirmation=False)
             if spec is not None:
-                _run(dry_run=True, no_llm=False, spec=spec)
+                _run(dry_run=True, mode="hybrid", spec=spec)
         elif choice == "2":
             spec = _choose_target(require_auth_confirmation=True)
             if spec is not None:
-                _run(dry_run=False, no_llm=False, spec=spec)
+                _run(dry_run=False, mode="hybrid", spec=spec)
         elif choice == "3":
             spec = _choose_target(require_auth_confirmation=True)
             if spec is not None:
-                _run(dry_run=False, no_llm=True, spec=spec)
+                _run(dry_run=False, mode="heuristic", spec=spec)
         elif choice == "4":
-            subprocess.run([sys.executable, "setup_vapi_users.py"], cwd=PROJECT_ROOT)
+            spec = _choose_target(require_auth_confirmation=True)
+            if spec is not None:
+                print(
+                    "[main] Aviso: modo 'llm' é experimental — força o LLM a reavaliar "
+                    "TODOS os casos, mesmo os que a heurística já resolveria sozinha. "
+                    "Não é o modo recomendado para uso normal (use 'hybrid')."
+                )
+                _run(dry_run=False, mode="llm", spec=spec)
         elif choice == "5":
-            _compute_metrics_on_latest()
+            subprocess.run([sys.executable, "setup_vapi_users.py"], cwd=PROJECT_ROOT)
         elif choice == "6":
+            _compute_metrics_on_latest()
+        elif choice == "7":
             subprocess.run(["bash", str(PROJECT_ROOT / "baseline" / "run_zap_api_scan.sh")], cwd=PROJECT_ROOT)
         else:
             print("Opção inválida.")
@@ -193,8 +206,17 @@ def main() -> None:
         help="Executa só parser + inferência + geração de casos, sem chamadas HTTP reais.",
     )
     parser.add_argument(
+        "--mode", choices=list(VALID_MODES), default=None,
+        help=(
+            "Modo experimental: 'heuristic' (LLM nunca chamado), 'hybrid' "
+            "(recomendado — heurística primeiro, LLM só em ambiguidade), "
+            "'llm' (experimental — força reavaliação por LLM de tudo). "
+            "Default: AGENT_MODE do .env, ou 'hybrid'."
+        ),
+    )
+    parser.add_argument(
         "--no-llm", action="store_true",
-        help="Desativa o uso do LLM em toda a pipeline (inferência de relações e classificação).",
+        help="Atalho para --mode heuristic (mantido por compatibilidade com versões anteriores).",
     )
     parser.add_argument(
         "--summary-only", action="store_true",
@@ -205,23 +227,21 @@ def main() -> None:
     if args.target_url:
         Config.TARGET_BASE_URL = args.target_url
 
+    mode: Mode = args.mode or Config.MODE
+    if args.no_llm:
+        mode = "heuristic"
+
     if not args.dry_run:
         # Aviso não-bloqueante (não interativo, para não quebrar scripts/CI):
         # execução real contra QUALQUER alvo exige autorização explícita —
         # ver README, seção "Escopo de uso".
-        print(f"[main] Execução real contra: {Config.TARGET_BASE_URL} — confirme que você tem autorização para isso.")
-
-    use_llm_relation_inference = None
-    if args.no_llm:
-        use_llm_relation_inference = False
-        Config.USE_LLM_FOR_CLASSIFICATION = False
+        print(
+            f"[main] Execução real (modo={mode}) contra: {Config.TARGET_BASE_URL} — "
+            "confirme que você tem autorização para isso."
+        )
 
     try:
-        report = run_pipeline(
-            spec_path=args.spec,
-            dry_run=args.dry_run,
-            use_llm_relation_inference=use_llm_relation_inference,
-        )
+        report = run_pipeline(spec_path=args.spec, dry_run=args.dry_run, mode=mode)
     except RuntimeError as exc:
         print(f"\n[main] Erro: {exc}")
         raise SystemExit(1)

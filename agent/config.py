@@ -29,13 +29,16 @@ import base64
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+Mode = Literal["heuristic", "hybrid", "llm"]
+VALID_MODES: tuple = ("heuristic", "hybrid", "llm")
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -57,6 +60,30 @@ def _env_float(name: str, default: float) -> float:
         return float(value)
     except ValueError:
         return default
+
+
+def _env_mode(name: str, default: Mode) -> Mode:
+    """
+    Lê um dos três modos experimentais (Fase 6 da refatoração metodológica):
+    "heuristic" (LLM nunca chamado), "hybrid" (default — heurística primeiro,
+    LLM só em ambiguidade) ou "llm" (experimental: força avaliação por LLM
+    mesmo onde a heurística já decidiria sozinha, para permitir estudo de
+    ablação). Um valor inválido no .env não derruba o programa — cai no
+    default "hybrid" com um aviso, já que travar por uma variável de
+    configuração mal escrita seria pior do que seguir com o comportamento
+    recomendado.
+    """
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if value not in VALID_MODES:
+        print(
+            f"[config] Aviso: {name}='{value}' inválido (esperado um de {VALID_MODES}); "
+            f"usando '{default}'."
+        )
+        return default
+    return value  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -130,8 +157,27 @@ class Config:
     # manualmente ao cliente em todo lugar.
     GOOGLE_API_KEY: Optional[str] = _env("GOOGLE_API_KEY") or _env("GEMINI_API_KEY")
     LLM_MODEL: str = _env("LLM_MODEL", "gemini-3.8-flash")
-    USE_LLM_FOR_RELATION_INFERENCE: bool = _env_bool("USE_LLM_FOR_RELATION_INFERENCE", True)
-    USE_LLM_FOR_CLASSIFICATION: bool = _env_bool("USE_LLM_FOR_CLASSIFICATION", True)
+
+    # --- Modo experimental (Fase 6 da refatoração metodológica) ---
+    # DECISÃO DE DESIGN: MODE é a interface recomendada — controla os dois
+    # pontos de decisão (relation_inference e classifier) de forma
+    # consistente. "hybrid" é o modo padrão e o único recomendado para o TCC
+    # em si; "heuristic" e "llm" existem para permitir, no futuro, um estudo
+    # de ablação (Heurística vs. Híbrido vs. LLM vs. ZAP) sem reescrever o
+    # agente — ver README, seção "Modos experimentais".
+    MODE: Mode = _env_mode("AGENT_MODE", "hybrid")
+
+    # Mantidos por compatibilidade com quem já configurou o .env antes do
+    # conceito de MODE existir (ver commit da Fase 6): quando ausentes do
+    # .env, são DERIVADOS de MODE; quando presentes, sobrescrevem MODE só
+    # para o ponto de decisão correspondente (uso avançado/depuração — o
+    # caminho recomendado é usar MODE ou --mode).
+    USE_LLM_FOR_RELATION_INFERENCE: bool = _env_bool(
+        "USE_LLM_FOR_RELATION_INFERENCE", MODE != "heuristic"
+    )
+    USE_LLM_FOR_CLASSIFICATION: bool = _env_bool(
+        "USE_LLM_FOR_CLASSIFICATION", MODE != "heuristic"
+    )
     # INCIDENTE REAL: numa rodada contra o vAPI real, uma chamada ao Gemini
     # ficou pendurada indefinidamente (sem essa configuração, o SDK usa seu
     # próprio timeout padrão, que não é garantidamente curto), travando o
