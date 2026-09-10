@@ -26,6 +26,7 @@ BOLA depende de uma relação de autorização entre um usuário e um recurso �
 - [Pipeline](#pipeline)
 - [Modos experimentais](#modos-experimentais)
 - [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração)
+- [Estudo de ablação](#estudo-de-ablação)
 - [Rastreabilidade de decisão e telemetria de LLM](#rastreabilidade-de-decisão-e-telemetria-de-llm)
 - [Requisitos e instalação](#requisitos-e-instalação)
 - [Subindo o vAPI](#subindo-o-vapi)
@@ -135,6 +136,29 @@ Ou seja: **o modo `hybrid` funciona ponta a ponta** — a heurística genuinamen
 1. **Bug real encontrado e corrigido**: `Executor._get_baseline()`/`_get_verification()` só substituíam parâmetros de **path** na requisição de controle (vítima acessando o próprio recurso) — nunca os de **query**. Para `report_id` (query), o baseline saía incompleto (`{"error": "report_id é obrigatório"}`), mascarando a comparação diferencial do classifier. Corrigido reaproveitando `test_case.query_params` (já montado com o ID da própria vítima) também no baseline/verificação. Sem impacto na avaliação do vAPI (candidatos lá são todos em path) — revalidado sem regressão (4 confirmed / 2 not_found, F1=1.000) após a correção.
 2. **Falso positivo heurístico — encontrado e corrigido**: o corretor de fronteira de dígito original de `classifier._body_contains()` não cobria o caso de um ID numérico coincidir com o final de um identificador alfanumérico — o username gerado `demoaea06a1` "continha" o ID `1` da vítima A pela heurística, mesmo sem relação nenhuma. Corrigido trocando a checagem de fronteira de dígito (`(?<!\d)...(?!\d)`) por fronteira de palavra (`\b...\b`) — resolve os dois casos (número dentro de número, número dentro de identificador alfanumérico) com uma regra só. Teste de regressão em `tests/test_classifier.py`.
 3. **Limite de cota do Google AI Studio**: o tier gratuito do `gemini-3.8-flash` retornou `429 RESOURCE_EXHAUSTED` (limite de 20 requisições/dia observado) durante os testes deste exercício — uma restrição operacional real que afeta a reprodutibilidade de execuções repetidas em modo `llm`/`hybrid` com chave gratuita, relevante para quem for reproduzir este experimento.
+
+## Estudo de ablação
+
+```bash
+python run_ablation.py                                        # defaults: 3 execuções heuristic, 3 hybrid, 1 llm
+python run_ablation.py --heuristic-runs 5 --hybrid-runs 5 --llm-runs 3
+python run_ablation.py --skip-llm                                # pula o modo llm (ex.: cota do Gemini esgotada)
+```
+
+Roda o agente nos três modos contra o mesmo alvo N vezes cada, agrega Precisão/Revocação/F1 (média ± desvio padrão) e imprime/exporta (`runs/ablation_study.json`/`.csv`) a comparação de 4 pontas pedida pela metodologia do TCC — o número do ZAP é o já documentado acima, não recalculado a cada rodada.
+
+**Resultado real de uma execução** (`--heuristic-runs 3 --hybrid-runs 3 --llm-runs 1`, contra o vAPI):
+
+```
+Modo             n   Precisão  Revocação    F1 (média±dp)  Chamadas LLM
+-----------------------------------------------------------------------
+heuristic        3      1.000      1.000      1.000±0.000             0
+hybrid           3      1.000      1.000      1.000±0.000             0
+llm              1      1.000      1.000      1.000±0.000             7
+zap_baseline     1          —      0.000      0.000±0.000           n/a
+```
+
+**Achado real, não maquiado**: no run do modo `llm` desta execução, as 6 chamadas de classificação forçadas retornaram `429 RESOURCE_EXHAUSTED` (cota do tier gratuito do Google AI Studio esgotada — ver "Caso ambíguo de demonstração"); só a chamada de `relation_inference` teve sucesso. O fallback degradou cada classificação para o veredito heurístico, e o F1 final do modo `llm` **ainda assim** saiu 1.000 — porque, sob falha total do LLM, o modo `llm` se comporta como `heuristic` neste conjunto. Isso não é o resultado que um estudo de ablação idealmente capturaria (o objetivo era medir o LLM decidindo de verdade em volume, não o fallback), mas é evidência real de duas coisas: (1) o design de fallback é robusto mesmo sob indisponibilidade total do provedor, e (2) a cota gratuita do Gemini é uma restrição operacional concreta para reexecutar este estudo em lote — reexecute mais tarde (a cota reseta) ou com uma chave paga para capturar o comportamento do modo `llm` sob sucesso.
 
 ## Rastreabilidade de decisão e telemetria de LLM
 
@@ -320,7 +344,7 @@ specs/vapi_openapi.json          spec OpenAPI do vAPI (reconstruída e corrigida
 ground_truth/vapi.json            gabarito validado por leitura de código-fonte
 baseline/                          script + hook do baseline OWASP ZAP
 demo/                               servidor + spec do caso ambíguo de demonstração (NÃO faz parte da avaliação do vAPI)
-main.py · setup_vapi_users.py · compute_metrics.py
+main.py · setup_vapi_users.py · compute_metrics.py · run_ablation.py
 requirements.txt · requirements-dev.txt
 ```
 
@@ -356,7 +380,7 @@ Em ordem de prioridade recomendada:
 
 1. **Adicionar um segundo ambiente vulnerável** (ex.: crAPI, DVGA) — generaliza a avaliação além de um único alvo, e é o caminho mais provável para um caso ambíguo *nativo* (dentro da avaliação formal, não num servidor de demonstração à parte).
 2. ~~Criar casos genuinamente ambíguos para exercitar o modo `hybrid`~~ — feito fora da avaliação formal, ver [Caso ambíguo de demonstração](#caso-ambíguo-de-demonstração). Achados dessa exploração: um bug real de baseline corrigido, um falso positivo heurístico encontrado e corrigido, e o limite de cota do tier gratuito do Gemini.
-3. **Estudo de ablação formal**: Heurística vs. Híbrido vs. LLM vs. ZAP, usando a exportação CSV/JSON com `experiment_id`/`mode` já preparada para isso.
+3. ~~Estudo de ablação formal~~ — script pronto (`run_ablation.py`) e uma execução real registrada, ver [Estudo de ablação](#estudo-de-ablação). **Pendente**: reexecutar o modo `llm` com cota disponível (a execução registrada esgotou a cota gratuita do Gemini em todas as chamadas de classificação, então o número do modo `llm` documentado reflete comportamento de fallback, não o LLM decidindo de verdade em volume) e rodar com mais repetições (5+) para números mais robustos.
 4. **Ampliar o ground truth** (mais endpoints, mais de um ambiente, segunda validação independente).
 5. **Melhorar a generalização**: extrair uma interface formal de "adapter" (hoje `setup_vapi_users.py` e `Config.identity()` são vAPI-específicos por convenção, não por contrato).
 6. **Tornar a autenticação totalmente configurável** por spec (hoje o esquema de header customizado é assumido; um alvo com OAuth/JWT padrão exigiria ajuste manual em `http_client.py`).
