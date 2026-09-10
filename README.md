@@ -313,7 +313,13 @@ Sobe o container oficial `zaproxy/zap-stable` e roda `zap-api-scan.py` contra o 
 | Testa acesso cruzado entre identidades | Sim (é o mecanismo central) | Não, por padrão |
 | Add-on Access Control Testing | N/A | Não configurado |
 
-Um scanner ZAP configurado com o add-on Access Control Testing (2 usuários + regras de acesso por URL) é uma comparação mais forte, ainda não implementada neste repositório — ver [Próximos passos](#próximos-passos).
+Um scanner ZAP configurado com o add-on Access Control Testing (2 usuários + regras de acesso por URL) seria uma comparação mais forte — **investigamos ativamente automatizá-lo e concluímos que não é praticável dentro do pipeline headless deste projeto**, por uma razão técnica concreta, não por falta de tempo:
+
+- A API REST do ZAP para esse add-on (`accessControl.action.scan`) diz explicitamente, na própria documentação do método: *"This assumes the Access Control rules were previously established via ZAP GUI and the necessary Context exported/imported."* Não existe endpoint de API para criar regras — só para rodar o scan depois que elas já existem.
+- Inspecionamos o add-on (`accessControl-alpha-13.zap` — **status alpha há mais de uma década**, sinal de que está efetivamente abandonado) por engenharia reversa (`javap -c`) para ver se dava pra contornar isso escrevendo o XML de contexto na mão. As regras realmente são persistidas no contexto (chave `context.accessControl.rules.rule`), serializadas como `"{userId}` `{ALLOWED|DENIED|UNKNOWN}` `{nó-da-árvore-de-site-em-base64}"`. O problema: o terceiro campo referencia um `SiteTreeNode` — um objeto da árvore de sites interna do ZAP, populada dinamicamente por spidering/import — não um identificador estável e externo que dê pra fabricar sem já ter o ZAP com aquela árvore montada em memória.
+- Ou seja: mesmo contornando a ausência de API, ainda seria necessário reproduzir o estado interno da árvore de sites do ZAP para gerar uma referência válida — na prática, exige a GUI de verdade (ou uma sessão ZAP interativa), incompatível com o pipeline Docker headless deste projeto.
+
+Isso não invalida a comparação já feita — reforça o argumento central da tese: configurar um baseline que realmente entenda posse de objeto por usuário exige trabalho manual substancial (aqui, nem sequer automatizável via API), enquanto o agente faz isso a partir da spec OpenAPI sozinho.
 
 ## Testes automatizados
 
@@ -366,7 +372,7 @@ Documentadas de propósito — o objetivo é deixar a metodologia cientificament
 - **Duas identidades autenticadas, path único de descoberta de objeto**: sem endpoint de listagem no vAPI, o "objeto conhecido" de cada identidade é sempre o próprio perfil — não generaliza para recursos subordinados (ex.: pedidos de um usuário) sem uma fonte adicional de identificadores.
 - **Endpoints com múltiplos parâmetros de identificador**: o gerador de casos substitui todos pelo ID da vítima — correto para os endpoints do vAPI avaliados (um parâmetro cada), incorreto para algo como `/users/{user_id}/orders/{order_id}`.
 - **Autorização baseada em contexto externo** (ex.: uma regra de negócio que depende de estado fora da própria API) não é modelada — o agente só enxerga o que a API expõe via HTTP.
-- **Limitações do baseline ZAP**: configuração de um único usuário, sem Access Control Testing — ver seção do ZAP acima e "Ameaças à validade".
+- **Limitações do baseline ZAP**: configuração de um único usuário; o add-on Access Control Testing (que permitiria 2 usuários + regras por URL) não tem API para criar regras e depende de estado interno da GUI do ZAP — investigado e documentado como impraticável no pipeline headless deste projeto, não por falta de tempo (ver seção do ZAP acima).
 
 ## Ameaças à validade
 
@@ -385,5 +391,5 @@ Em ordem de prioridade recomendada:
 4. **Ampliar o ground truth** (mais endpoints, mais de um ambiente, segunda validação independente).
 5. ~~Melhorar a generalização~~ — `agent/adapters.py` formaliza `IdentityProvider` (`per_module`/`shared`, escolhido por `IDENTITY_STRATEGY`). **Pendente**: validar a estratégia `shared` contra um alvo real (só `per_module`/vAPI foi validado em produção); `setup_vapi_users.py` continua sendo escrito do zero por alvo, por natureza.
 6. ~~Tornar a autenticação configurável~~ — `OpenAPISpec.infer_auth_header()` já infere `apiKey`-em-header e `http bearer` a partir do `securityScheme` da própria spec quando o `.env` não configura explicitamente (ver `agent/orchestrator.py`). **Pendente**: esquemas mais complexos (OAuth2, cookie, HTTP Basic) continuam exigindo ajuste manual em `http_client.py` — documentado como limite deliberado, não uma lacuna esquecida.
-7. **Baseline ZAP com Access Control Testing** configurado (2 usuários + regras de acesso), como segunda linha de base mais forte para a comparação.
+7. ~~Baseline ZAP com Access Control Testing~~ — investigado a fundo (engenharia reversa do add-on via `javap`) e concluído **impraticável via API/headless**: não há endpoint para criar regras, e o formato de persistência depende de um `SiteTreeNode` interno da GUI, não de um identificador externo fabricável (ver seção do ZAP). Só seria viável com a GUI do ZAP rodando interativamente — fora do escopo deste pipeline automatizado.
 8. **Considerar um plano pago ou cota maior no Google AI Studio** para execuções repetidas do modo `llm`/`hybrid` em lote, dado o limite de 20 req/dia observado no tier gratuito.
