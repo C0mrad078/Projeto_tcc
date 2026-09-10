@@ -189,6 +189,13 @@ class Config:
     # --- Saída ---
     RUNS_DIR: Path = Path(_env("RUNS_DIR", str(PROJECT_ROOT / "runs")))
 
+    # --- Generalização (Fase 8 da refatoração metodológica) ---
+    # "per_module" (default) preserva o comportamento validado do vAPI —
+    # cada módulo (api1, api5, ...) tem sua própria tabela de usuários.
+    # "shared" é para um alvo hipotético com UMA base de usuários
+    # compartilhada entre todos os endpoints — ver agent/adapters.py.
+    IDENTITY_STRATEGY: str = _env("IDENTITY_STRATEGY", "per_module")
+
     @staticmethod
     def build_auth_header(token: str) -> dict:
         """Monta o cabeçalho HTTP de autenticação a partir do token bruto."""
@@ -199,19 +206,16 @@ class Config:
     def identity(module: str, label: str) -> Identity:
         """
         Carrega a identidade `label` ("A" ou "B") para o módulo `module`
-        (ex.: "api1", "api5") a partir de variáveis como
+        (ex.: "api1", "api5"). Delega para o IdentityProvider escolhido por
+        IDENTITY_STRATEGY (ver agent/adapters.py) — o default "per_module"
+        é bit-a-bit idêntico ao comportamento original (variáveis como
         USER_A_API1_USERNAME / USER_A_API1_PASSWORD / USER_A_API1_ID /
-        USER_A_API1_TOKEN. Ver docstring do módulo para o porquê de a
-        identidade ser escopada por módulo em vez de global.
+        USER_A_API1_TOKEN), só extraído para uma classe própria para permitir
+        outras estratégias sem tocar neste método.
         """
-        prefix = f"USER_{label}_{module.upper()}"
-        return Identity(
-            label=label,
-            username=_env(f"{prefix}_USERNAME"),
-            password=_env(f"{prefix}_PASSWORD"),
-            resource_id=_env(f"{prefix}_ID"),
-            token=_env(f"{prefix}_TOKEN"),
-        )
+        from .adapters import build_identity_provider  # import tardio: evita ciclo (adapters usa Identity daqui)
+
+        return build_identity_provider(Config.IDENTITY_STRATEGY).get(module, label)
 
     @staticmethod
     def require_network_config(modules: List[str]) -> None:

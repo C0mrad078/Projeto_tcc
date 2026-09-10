@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import time
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -51,6 +52,25 @@ def run_pipeline(
 
     spec_path = spec_path or Config.OPENAPI_SPEC_PATH
     spec = parse_openapi(spec_path)
+
+    # DECISÃO DE DESIGN (Fase 9/generalização — "autenticação configurável
+    # por spec"): se o .env NÃO configurar AUTH_HEADER_NAME/AUTH_HEADER_FORMAT
+    # explicitamente, tentamos inferir o esquema a partir do primeiro
+    # securityScheme da própria spec (ver OpenAPISpec.infer_auth_header()).
+    # Configuração explícita em .env sempre vence — mesmo princípio já usado
+    # para TARGET_BASE_URL logo abaixo. Para o vAPI, o .env já configura os
+    # dois explicitamente, então este bloco nunca altera o comportamento
+    # validado (confirmado empiricamente, sem regressão).
+    if "AUTH_HEADER_NAME" not in os.environ and "AUTH_HEADER_FORMAT" not in os.environ:
+        inferred = spec.infer_auth_header()
+        if inferred:
+            header_name, header_format = inferred
+            print(
+                f"[orchestrator] Auth inferida da spec (sem AUTH_HEADER_NAME/"
+                f"AUTH_HEADER_FORMAT em .env): header='{header_name}', formato='{header_format}'."
+            )
+            Config.AUTH_HEADER_NAME = header_name
+            Config.AUTH_HEADER_FORMAT = header_format
 
     # DECISÃO DE DESIGN: TARGET_BASE_URL (.env ou --target-url) é sempre o
     # que efetivamente decide para onde as requisições vão — não o campo

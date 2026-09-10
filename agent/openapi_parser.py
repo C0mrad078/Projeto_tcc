@@ -14,7 +14,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 PATH_PARAM_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -77,6 +77,27 @@ class OpenAPISpec:
     # Título declarado em info.title — usado como rótulo legível do alvo nos
     # relatórios (ex.: "vAPI"). String vazia se a spec não declarar info.title.
     title: str = ""
+
+    def infer_auth_header(self) -> Optional[Tuple[str, str]]:
+        """
+        Sugere (nome_do_header, formato) a partir do primeiro securityScheme
+        declarado na spec — usada por orchestrator.py só como DEFAULT quando
+        o .env não configura AUTH_HEADER_NAME/AUTH_HEADER_FORMAT
+        explicitamente (Fase 9/generalização: "autenticação configurável por
+        spec"). Cobre os dois esquemas mais comuns em specs REST:
+          - apiKey em header (ex.: vAPI: "Authorization-Token") -> (name, "{token}")
+          - http bearer (convenção REST mais comum fora do vAPI) -> ("Authorization", "Bearer {token}")
+        Esquemas não cobertos (oauth2, cookie, http basic, etc.) retornam
+        None — o agente não tenta adivinhar um fluxo de autenticação que não
+        sabe operar; nesses casos, configuração manual em .env continua
+        sendo necessária.
+        """
+        for scheme in self.security_schemes.values():
+            if scheme.get("type") == "apiKey" and scheme.get("in") == "header" and scheme.get("name"):
+                return scheme["name"], "{token}"
+            if scheme.get("type") == "http" and str(scheme.get("scheme", "")).lower() == "bearer":
+                return "Authorization", "Bearer {token}"
+        return None
 
 
 def _resolve_ref(ref: str, document: Dict[str, Any]) -> Any:
