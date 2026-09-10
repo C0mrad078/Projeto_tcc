@@ -46,26 +46,27 @@ class Verdict:
 
 
 def _body_contains(body: Any, needle: str) -> bool:
-    """
-    Busca ingênua (mas explícita) por uma string em qualquer lugar do corpo
-    da resposta.
+    r"""
+    Busca por uma string em qualquer lugar do corpo da resposta, exigindo
+    fronteira de "palavra" (\b) dos dois lados — não uma substring nua.
 
-    CUIDADO: se `needle` for puramente numérico (ex.: um ID incremental "1"
-    ou "2", comum em bancos de teste recém-criados), uma busca por substring
-    simples teria alto risco de falso positivo — bastaria o corpo conter
-    "201" (um status HTTP, uma contagem, etc.) para "casar" com o ID "1" ou
-    "2" de vAPI. Por isso, para needles numéricos, exigimos que não haja
-    outro dígito colado antes/depois (fronteira de número). Para needles não
-    numéricos (ex.: um ObjectId hexadecimal de 24 caracteres, ou o canário
-    "bola-test-a"), a colisão por substring é considerada improvável o
-    suficiente para manter a busca simples.
+    HISTÓRICO: a primeira versão só evitava colisão entre dígitos (ex.: ID
+    "1" não deveria casar com "201"), usando lookaround negativo restrito a
+    \d. Isso deixava passar um caso real, encontrado testando um cenário
+    de ambiguidade genuína (ver README, "Caso ambíguo de demonstração"): um
+    ID numérico "1" "casava" com o final de um identificador alfanumérico
+    como "demoaea06a1", porque a letra "a" antes do "1" não é um dígito, mas
+    também não é uma fronteira de palavra de verdade. \b do Python trata
+    letras/dígitos/underscore como caractere de "palavra", então
+    \b1\b NÃO casa dentro de "201" (dígitos grudados) NEM dentro de
+    "demoaea06a1" (letra grudada) — resolve os dois casos com uma regra só,
+    e vale tanto para needles numéricos (IDs) quanto não-numéricos (ex.: o
+    canário "bola-test-a").
     """
     if body is None:
         return False
     text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
-    if needle.isdigit():
-        return re.search(rf"(?<!\d){re.escape(needle)}(?!\d)", text) is not None
-    return needle in text
+    return re.search(rf"\b{re.escape(needle)}\b", text) is not None
 
 
 def _bodies_match(baseline_body: Any, attack_body: Any) -> bool:

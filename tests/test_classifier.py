@@ -49,6 +49,21 @@ def test_numeric_id_does_not_false_positive_on_substring(api1_endpoint, identity
     assert verdict.result != CONFIRMED
 
 
+def test_numeric_id_does_not_false_positive_on_alphanumeric_identifier_suffix(api1_endpoint, identity_a, identity_b):
+    """
+    Achado real (ver README, "Caso ambíguo de demonstração"): ID "1" não
+    deve "casar" com o final de um identificador alfanumérico como
+    "demoaea06a1" — só a letra "a" antes do dígito não bastava para separar
+    (fronteira de dígito), é preciso fronteira de PALAVRA (\\b).
+    """
+    result = make_execution_result(
+        endpoint=api1_endpoint, attacker=identity_b, victim=identity_a,
+        attack_status=200, attack_body={"owner_note": "Relatório de demoaea06a1", "ref": "RPT-042"},
+    )
+    verdict = classify_heuristic(result)
+    assert verdict.result != CONFIRMED
+
+
 def test_200_generic_body_without_baseline_is_ambiguous(api1_endpoint, identity_a, identity_b):
     result = make_execution_result(
         endpoint=api1_endpoint, attacker=identity_b, victim=identity_a,
